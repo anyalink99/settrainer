@@ -1,6 +1,6 @@
 # Set Pro Training
 
-### 🔗 Play Now: [https://anyalink99.github.io/settrainer.github.io/](https://anyalink99.github.io/settrainer.github.io/)
+### 🔗 Play Now: [https://niocreations.ru/settrainer/](https://niocreations.ru/settrainer/)
 
 ---
 
