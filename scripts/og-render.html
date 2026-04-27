@@ -1,0 +1,166 @@
+<!doctype html>
+<!--
+  Source for og-image.png. Edit, then regenerate (Windows + Chrome + Python/PIL):
+
+    chrome --headless=new --disable-gpu --hide-scrollbars --window-size=1200,725 \
+      --screenshot=scripts/og-raw.png file:///abs/path/to/scripts/og-render.html
+    python -c "from PIL import Image; Image.open('scripts/og-raw.png').crop((0,0,1200,630)).save('og-image.png')"
+
+  The 725 height compensates for headless Chrome's ~95px viewport offset; final crop yields exact 1200x630.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OG render</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #2d2631; font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+  .stage { width: 1200px; height: 630px; position: relative; background: radial-gradient(ellipse at 50% 42%, #3a3140 0%, #2d2631 70%); overflow: hidden; }
+
+  .row { position: absolute; top: 80px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 26px; }
+
+  .card-slot { width: 200px; height: 300px; position: relative; }
+
+  .strip {
+    position: absolute; top: 402px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 14px; height: 64px;
+  }
+  .stat-card {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 12px;
+    padding: 10px 16px;
+    height: 64px; box-sizing: border-box;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .stat-label {
+    font-size: 10px; color: #9ca3af; text-transform: uppercase;
+    font-weight: 700; letter-spacing: 0.1em; line-height: 1;
+  }
+  .stat-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 700; line-height: 1; color: #f472b6; font-size: 26px;
+  }
+  .spark-card {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 12px;
+    padding: 8px 12px 6px;
+    height: 64px; box-sizing: border-box;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .spark-card svg { display: block; }
+
+  .card {
+    background: white; border-radius: 12px;
+    width: 100%; height: 100%; display: flex; flex-direction: column;
+    justify-content: center; align-items: center;
+    padding: 2px;
+    border: 3px solid transparent; position: absolute; inset: 0;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.45);
+    container-type: size;
+    container-name: card;
+    --shape-size-ratio: 0.9;
+  }
+  .card.selected {
+    border-color: #a34e78;
+    box-shadow: 0 0 0 4px rgba(236, 72, 153, 0.18), 0 0 38px rgba(236, 72, 153, 0.55), 0 6px 16px rgba(0,0,0,0.45);
+  }
+  .card:not(.selected) { transform: scale(0.92); }
+
+  .card svg.shape { flex-shrink: 0; width: 95%; }
+  .card svg.shape.diamond { height: calc(var(--shape-size-ratio) * 42cqmax); margin-top: calc(var(--shape-size-ratio) * -11.8cqmax); }
+  .card svg.shape.oval    { height: calc(var(--shape-size-ratio) * 42cqmax); margin-top: calc(var(--shape-size-ratio) * -10.8cqmax); }
+  .card svg.shape.wave    { height: calc(var(--shape-size-ratio) * 45cqmax); margin-top: calc(var(--shape-size-ratio) * -13.6cqmax); transform: translateY(calc(var(--shape-size-ratio) * 2.33cqmax)); }
+  .card svg.shape:first-child { margin-top: 0 !important; }
+
+  .title {
+    position: absolute; left: 0; right: 0; top: 490px;
+    height: 80px; line-height: 80px;
+    font-size: 70px; font-weight: 900; letter-spacing: 7px;
+    white-space: nowrap; text-align: center;
+  }
+  .title .a { color: #f3f4f6; }
+  .title .b { color: #f472b6; margin-left: 22px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="row" id="row"></div>
+
+  <div class="strip">
+    <div class="stat-card">
+      <div class="stat-label">Total Time</div>
+      <div class="stat-value">00:59:42</div>
+    </div>
+    <div class="spark-card">
+      <div class="stat-label">Sets / min</div>
+      <svg width="240" height="28" viewBox="0 0 240 28">
+        <defs>
+          <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#f472b6" stop-opacity="0.4"/>
+            <stop offset="100%" stop-color="#f472b6" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <path d="M 0 22 L 24 16 L 48 19 L 72 13 L 96 16 L 120 8 L 144 5 L 168 9 L 192 4 L 216 6 L 240 2 L 240 28 L 0 28 Z" fill="url(#spark-fill)"/>
+        <polyline points="0,22 24,16 48,19 72,13 96,16 120,8 144,5 168,9 192,4 216,6 240,2" fill="none" stroke="#f472b6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg Find</div>
+      <div class="stat-value">1.24s</div>
+    </div>
+  </div>
+
+  <div class="title"><span class="a">SET</span><span class="b">TRAINING</span></div>
+</div>
+
+<script>
+  const COLORS = ['#fd0000', '#01a43b', '#0000fe'];
+  const SHAPE_VIEWBOX = '0 0 32 32';
+  const CLASSIC_WAVE_PATH = 'M29.5,12 C30.8,14.5 30.8,17.2 30.2,19.9 C29.7,22.2 28,23 26,22 C25.4,21.7 24.8,21.4 24.3,21.1 C21.7,19.5 19,19.3 16.1,20.4 C13.4,21.5 10.6,21.6 7.8,20.8 C3.3,19.4 0.4,14.6 1.4,10.2 C2,7.7 3.7,7 5.9,8.2 C6.2,8.4 6.5,8.6 6.8,8.8 C9.7,10.6 12.7,11.2 16,9.9 C17.3,9.3 18.7,8.9 20,8.6 C24,7.6 27.5,8.9 29.5,12 Z';
+  const CLASSIC_TPL = {
+    diamond: '<polygon transform="translate(16,16) scale(1.08) translate(-16,-16)" points="1,16 16,8.5 31,16 16,23.5" stroke="${color}" stroke-width="${strokeW}" fill="${fill}" stroke-linejoin="round" />',
+    oval:    '<rect transform="translate(16,16) scale(1.08, 1.16) translate(-16,-16)" x="1" y="9.5" width="30" height="13" rx="6.5" stroke="${color}" stroke-width="${strokeW}" fill="${fill}" />',
+    wave:    '<path transform="translate(16,16) scale(1.08) translate(-16,-16)" d="${waveD}" stroke="${color}" stroke-width="${strokeW}" fill="${fill}" stroke-linejoin="round" />'
+  };
+
+  // Stripe patterns (classic preset: step 1.5, sWidth 0.6)
+  const stripeDefs = COLORS.map((c, i) =>
+    `<pattern id="s-${i}" patternUnits="userSpaceOnUse" width="1.5" height="1.5">
+       <line x1="0" y1="0" x2="0" y2="1.5" stroke="${c}" stroke-width="0.6" />
+     </pattern>`).join('');
+
+  function shapeSvg(card) {
+    const color = COLORS[card.c];
+    let fill = card.f === 0 ? 'none' : color;
+    if (card.f === 1) fill = `url(#s-${card.c})`;
+    const strokeW = card.f === 1 ? 1 : 1.7;
+    const keys = ['diamond', 'oval', 'wave'];
+    const shapeKey = keys[card.s];
+    let inner = CLASSIC_TPL[shapeKey];
+    const vars = { color, strokeW, fill, waveD: CLASSIC_WAVE_PATH };
+    Object.keys(vars).forEach(k => { inner = inner.replace(new RegExp('\\$\\{' + k + '\\}', 'g'), vars[k]); });
+    return `<svg class="shape ${shapeKey}" viewBox="${SHAPE_VIEWBOX}">${inner}</svg>`;
+  }
+
+  function renderCard(card, selected) {
+    const shapes = Array(card.n + 1).fill(0).map(() => shapeSvg(card)).join('');
+    return `
+      <div class="card-slot">
+        <svg width="0" height="0" style="position:absolute"><defs>${stripeDefs}</defs></svg>
+        <div class="card${selected ? ' selected' : ''}">${shapes}</div>
+      </div>`;
+  }
+
+  // Set composition: c=color (0=red,1=green,2=blue), s=shape (0=diamond,1=oval,2=wave), n=count-1 (0,1,2), f=fill (0=empty,1=striped,2=solid)
+  const cards = [
+    { card: { c: 0, s: 0, n: 0, f: 2 }, selected: true  }, // 1 red diamond solid (big)
+    { card: { c: 1, s: 1, n: 1, f: 1 }, selected: true  }, // 2 green ovals striped (big)
+    { card: { c: 1, s: 0, n: 1, f: 0 }, selected: false }, // 2 green diamonds empty (small — distractor)
+    { card: { c: 2, s: 2, n: 2, f: 0 }, selected: true  }, // 3 blue waves empty (big)
+  ];
+
+  document.getElementById('row').innerHTML = cards.map(c => renderCard(c.card, c.selected)).join('');
+</script>
+</body>
+</html>
