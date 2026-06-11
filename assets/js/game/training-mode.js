@@ -48,6 +48,7 @@
  * - storage-module.js (Storage), constants.js (STORAGE_KEYS)
  * - graphics-rendering.js (updateSlot)
  * - set-math.js (getComplementaryCard, findCardInDeck, getPossibleSetsIndicesForBoard)
+ * - tps-logic.js (balanceBoardTowardTarget)
  * - game-logic.js (getShuffleDurations, setDebugTPSIters, handleGameFinish)
  */
 
@@ -108,52 +109,9 @@ function formatTrainingSavedLabel(meta) {
 }
 
 function generateBoardWithTargetPossibleSets(target) {
-  let localDeck = createDeck();
-  let localBoard = localDeck.splice(0, 12);
-  let iterations = 0;
-  if (!target || target <= 0) return { board: localBoard, iterations };
-
-  const MAX_ITER = 50;
-  for (let iter = 0; iter < MAX_ITER; iter++) {
-    const sets = getPossibleSetsIndicesForBoard(localBoard);
-    const S = sets.length;
-    if (S === target) {
-      iterations = iter + 1;
-      return { board: localBoard, iterations };
-    }
-    if (S < target) {
-      const indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-      let i = indices[Math.floor(Math.random() * 12)];
-      let j = indices[Math.floor(Math.random() * 12)];
-      if (i === j) continue;
-      const needed = getComplementaryCard(localBoard[i], localBoard[j]);
-      const deckIdx = findCardInDeck(localDeck, needed);
-      if (deckIdx === -1) continue;
-      const candidates = indices.filter(idx => idx !== i && idx !== j);
-      const setCountByPos = {};
-      candidates.forEach(idx => { setCountByPos[idx] = 0; });
-      sets.forEach(([a, b, c]) => {
-        if (setCountByPos[a] !== undefined) setCountByPos[a]++;
-        if (setCountByPos[b] !== undefined) setCountByPos[b]++;
-        if (setCountByPos[c] !== undefined) setCountByPos[c]++;
-      });
-      const minCount = Math.min(...candidates.map(idx => setCountByPos[idx]));
-      const bestK = candidates.filter(idx => setCountByPos[idx] === minCount);
-      const k = bestK[Math.floor(Math.random() * bestK.length)];
-      const oldK = localBoard[k];
-      localBoard[k] = localDeck.splice(deckIdx, 1)[0];
-      localDeck.push(oldK);
-    } else {
-      if (sets.length === 0) continue;
-      const oneSet = sets[Math.floor(Math.random() * sets.length)];
-      const k = oneSet[Math.floor(Math.random() * 3)];
-      const deckIdx = Math.floor(Math.random() * localDeck.length);
-      const oldK = localBoard[k];
-      localBoard[k] = localDeck[deckIdx];
-      localDeck[deckIdx] = oldK;
-    }
-  }
-  iterations = MAX_ITER;
+  const localDeck = createDeck();
+  const localBoard = localDeck.splice(0, 12);
+  const iterations = balanceBoardTowardTarget(localBoard, localDeck, target, Math.random);
   return { board: localBoard, iterations };
 }
 

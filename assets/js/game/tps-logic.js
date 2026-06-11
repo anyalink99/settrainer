@@ -9,44 +9,50 @@
  * game state only; the UI just displays the final board.
  *
  * -----------------------------------------------------------------------------
- * 1. PENDULUM BALANCING (runPendulumBalancing)
+ * 1. GREEDY PENDULUM BALANCING (balanceBoardTowardTarget / runPendulumBalancing)
  * -----------------------------------------------------------------------------
  * Used when a full 12-card board is created: game start or any Shuffle.
+ * Also used by training-mode.js to generate boards with exactly 1 set.
  *
  * - Start with 12 random cards from the deck.
- * - Loop up to 50 times. Each iteration:
- *   - Count current sets on the board (S).
- *   - If S === X, done; return iteration count.
- *   - If S < X (Build): pick two random board positions (i, j), compute the
- *     complementary card that would form a set with board[i] and board[j].
- *     If that card is in the deck, pick a third position k (k ≠ i, j) that
- *     participates in the fewest current sets (to avoid breaking sets when
- *     we swap). Swap board[k] with that card (old board[k] goes back to deck).
- *   - If S > X (Destroy): pick a random set on the board, pick a random card
- *     k in that set, swap board[k] with a random card from the deck.
- * - If 50 iterations pass without S === X, return 50 (caller keeps current
- *   board as best approximation).
+ * - Loop up to 50 times. Each iteration proposes a single board<->deck swap:
+ *   - If S < X (Build): scan board pairs in random order until one is found
+ *     whose complementary card is still in the deck (no iteration is wasted
+ *     when the first random pair has no complement). The complement replaces
+ *     the position participating in the fewest current sets. If no pair has
+ *     a complement in the deck, propose a fully random swap instead.
+ *   - If S > X (Destroy): pick a random set on the board, swap a random card
+ *     of that set with a random card from the deck.
+ * - The swap is then evaluated greedily: if it increased |S - X| it is
+ *   reverted, otherwise it is kept. |S - X| therefore never increases, so
+ *   the final board is always the best board seen — no rollback needed.
+ * - Returns the number of iterations used (MAX_ITER if X was never reached).
  *
  * -----------------------------------------------------------------------------
  * 2. TARGETED REPLENISHMENT (pickTargetedReplenishmentThree)
  * -----------------------------------------------------------------------------
  * Used after the player collects a set: 3 cards are removed and 3 new ones
- * must be drawn. Instead of blindly popping from the deck, we search for a
- * triple that yields exactly X sets on the resulting 12-card board.
+ * must be drawn. All C(deck, 3) candidate triples are evaluated exhaustively;
+ * a uniformly random triple yielding exactly X sets is returned, or, when no
+ * exact triple exists (e.g. the 9 remaining cards already contain more than
+ * X sets — a hard floor no triple can lower), a random triple among those
+ * closest to X.
  *
- * - Input: emptySlots = [i, j, k], the three indices that will receive new cards.
- * - Loop up to 100 times. Each iteration:
- *   - With 50% probability use a "guided" draw: pick a random pair from the
- *     9 remaining board positions, compute the complementary card (so it forms
- *     a set with that pair). If that card is in the deck, use it as the first
- *     of the 3 new cards; the other two are random from the deck. Otherwise
- *     fall back to three random cards.
- *   - With 50% probability pick three fully random cards from the deck.
- *   - Build a candidate 12-card board: the 9 unchanged cards plus the 3 new
- *     ones in emptySlots. Count sets (S_total).
- *   - If S_total === X, return { threeCards, iterations, perfect: true }.
- *   - Else track the triple that minimizes |S_total - X|.
- * - After 100 iterations, return the best triple found with perfect: false.
+ * The exhaustive scan is cheap because set positions don't matter, only the
+ * card multiset, and each triple's set count decomposes into independent
+ * precomputed parts:
+ *   total = S_base                 sets fully inside the 9 kept cards
+ *         + s1[a] + s1[b] + s1[c]  kept pairs completed by one new card
+ *         + s2[ab] + s2[ac] + s2[bc]  new pairs completed by one kept card
+ *         + s3                     1 if the three new cards form a set
+ * so the inner loop is pure table lookups (~50k triples worst case, < 5 ms).
+ *
+ * Returns { threeCards, iterations, perfect, matches, diff }:
+ *   - iterations: total candidate triples evaluated,
+ *   - matches: how many triples tied for the returned quality,
+ *   - diff: |S_total - X| of the result (0 when perfect).
+ * The random pick among equal candidates is reservoir sampling driven by
+ * tpsRandom(), so synchronized-seed games stay deterministic.
  *
  * The caller (game-logic.js) then removes those 3 cards from the deck and
  * assigns them to the empty slots. If deck has fewer than 3 cards, TPS is
@@ -63,72 +69,104 @@
  * -----------------------------------------------------------------------------
  * - Globals: config (config.targetPossibleSets), board, deck, gameSeededRng (state.js).
  * - set-math.js: getComplementaryCard, findCardInDeck, getPossibleSetsIndices,
- *   getPossibleSetsIndicesForBoard.
+ *   getPossibleSetsIndicesForBoard, getSetCountForCardArray.
  */
 
 function tpsRandom() {
   return (config && config.synchronizedSeed && gameSeededRng ? gameSeededRng : Math.random)();
 }
 
+function tpsCardKey(card) {
+  return card.c + ',' + card.s + ',' + card.f + ',' + card.n;
+}
+
 function pickTargetedReplenishmentThree(emptySlots) {
   const X = config.targetPossibleSets;
   if (!X || deck.length < 3) return null;
-  const MAX_ITER = 100;
-  const boardIndices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].filter(i => !emptySlots.includes(i));
-  let best = { diff: Infinity, threeCards: null };
-  for (let iter = 0; iter < MAX_ITER; iter++) {
-    let c0, c1, c2;
-    if (tpsRandom() < 0.5 && boardIndices.length >= 2) {
-      const i = boardIndices[Math.floor(tpsRandom() * boardIndices.length)];
-      let j = boardIndices[Math.floor(tpsRandom() * boardIndices.length)];
-      while (j === i) j = boardIndices[Math.floor(tpsRandom() * boardIndices.length)];
-      const needed = getComplementaryCard(board[i], board[j]);
-      const needIdx = findCardInDeck(deck, needed);
-      if (needIdx !== -1) {
-        c0 = deck[needIdx];
-        const others = deck.filter((_, idx) => idx !== needIdx);
-        const r1 = Math.floor(tpsRandom() * others.length);
-        c1 = others[r1];
-        const r2 = Math.floor(tpsRandom() * (others.length - 1));
-        c2 = others[r2 >= r1 ? r2 + 1 : r2];
-      } else {
-        c0 = deck[Math.floor(tpsRandom() * deck.length)];
-        let idx1 = Math.floor(tpsRandom() * deck.length);
-        let idx2 = Math.floor(tpsRandom() * deck.length);
-        while (idx1 === deck.indexOf(c0)) idx1 = Math.floor(tpsRandom() * deck.length);
-        while (idx2 === deck.indexOf(c0) || idx2 === idx1) idx2 = Math.floor(tpsRandom() * deck.length);
-        c1 = deck[idx1];
-        c2 = deck[idx2];
-      }
-    } else {
-      const idx0 = Math.floor(tpsRandom() * deck.length);
-      let idx1 = Math.floor(tpsRandom() * deck.length);
-      let idx2 = Math.floor(tpsRandom() * deck.length);
-      while (idx1 === idx0) idx1 = Math.floor(tpsRandom() * deck.length);
-      while (idx2 === idx0 || idx2 === idx1) idx2 = Math.floor(tpsRandom() * deck.length);
-      c0 = deck[idx0];
-      c1 = deck[idx1];
-      c2 = deck[idx2];
-    }
-    const candidateBoard = [];
-    let newIdx = 0;
-    for (let pos = 0; pos < 12; pos++) {
-      if (emptySlots.includes(pos)) {
-        candidateBoard[pos] = [c0, c1, c2][newIdx++];
-      } else {
-        candidateBoard[pos] = board[pos];
-      }
-    }
-    const S_total = getPossibleSetsIndicesForBoard(candidateBoard).length;
-    const diff = Math.abs(S_total - X);
-    if (diff === 0) {
-      return { threeCards: [c0, c1, c2], iterations: iter + 1, perfect: true };
-    }
-    if (diff < best.diff) {
-      best = { diff, threeCards: [c0, c1, c2] };
+
+  const kept = [];
+  for (let pos = 0; pos < board.length; pos++) {
+    if (!emptySlots.includes(pos) && board[pos]) kept.push(board[pos]);
+  }
+  // Sets fully inside the kept cards — identical for every candidate triple,
+  // and a hard floor: if sBase > X, no exact match exists.
+  const sBase = getSetCountForCardArray(kept);
+
+  // For each card value: how many kept pairs it would complete into a set.
+  const pairCompCount = new Map();
+  for (let i = 0; i < kept.length; i++) {
+    for (let j = i + 1; j < kept.length; j++) {
+      const key = tpsCardKey(getComplementaryCard(kept[i], kept[j]));
+      pairCompCount.set(key, (pairCompCount.get(key) || 0) + 1);
     }
   }
-  return { threeCards: best.threeCards, iterations: MAX_ITER, perfect: false };
+  const keptKeys = new Set(kept.map(tpsCardKey));
+
+  const n = deck.length;
+  const keys = new Array(n);
+  const s1 = new Array(n);
+  for (let i = 0; i < n; i++) {
+    keys[i] = tpsCardKey(deck[i]);
+    s1[i] = pairCompCount.get(keys[i]) || 0;
+  }
+  // For each deck pair (a, b): key of its complement, and whether that
+  // complement sits among the kept cards (s2).
+  const compKey = new Array(n);
+  const s2 = new Array(n);
+  for (let a = 0; a < n; a++) {
+    compKey[a] = new Array(n);
+    s2[a] = new Uint8Array(n);
+    for (let b = a + 1; b < n; b++) {
+      const key = tpsCardKey(getComplementaryCard(deck[a], deck[b]));
+      compKey[a][b] = key;
+      s2[a][b] = keptKeys.has(key) ? 1 : 0;
+    }
+  }
+
+  let evaluated = 0;
+  let perfectPick = null, perfectCount = 0;
+  let bestPick = null, bestDiff = Infinity, bestCount = 0;
+  for (let a = 0; a < n - 2; a++) {
+    for (let b = a + 1; b < n - 1; b++) {
+      const partialAB = sBase + s1[a] + s1[b] + s2[a][b];
+      const compAB = compKey[a][b];
+      for (let c = b + 1; c < n; c++) {
+        const total = partialAB + s1[c] + s2[a][c] + s2[b][c] + (compAB === keys[c] ? 1 : 0);
+        evaluated++;
+        const diff = total >= X ? total - X : X - total;
+        if (diff === 0) {
+          perfectCount++;
+          if (tpsRandom() * perfectCount < 1) perfectPick = [a, b, c];
+        } else if (perfectCount === 0) {
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestCount = 1;
+            bestPick = [a, b, c];
+          } else if (diff === bestDiff) {
+            bestCount++;
+            if (tpsRandom() * bestCount < 1) bestPick = [a, b, c];
+          }
+        }
+      }
+    }
+  }
+
+  if (perfectPick) {
+    return {
+      threeCards: perfectPick.map(i => deck[i]),
+      iterations: evaluated,
+      perfect: true,
+      matches: perfectCount,
+      diff: 0
+    };
+  }
+  return {
+    threeCards: bestPick.map(i => deck[i]),
+    iterations: evaluated,
+    perfect: false,
+    matches: bestCount,
+    diff: bestDiff
+  };
 }
 
 function removeCardsFromDeck(threeCards) {
@@ -138,45 +176,83 @@ function removeCardsFromDeck(threeCards) {
   }
 }
 
-function runPendulumBalancing() {
-  const X = config.targetPossibleSets;
-  if (!X || X <= 0) return 0;
+function balanceBoardTowardTarget(boardArr, deckArr, X, rng) {
+  if (!X || X <= 0 || deckArr.length === 0) return 0;
+  const positions = [];
+  for (let i = 0; i < boardArr.length; i++) {
+    if (boardArr[i]) positions.push(i);
+  }
+  if (positions.length < 3) return 0;
+
   const MAX_ITER = 50;
-  for (let iter = 0; iter < MAX_ITER; iter++) {
-    const sets = getPossibleSetsIndices();
-    const S = sets.length;
-    if (S === X) return iter + 1;
-    if (S < X) {
-      const indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-      let i = indices[Math.floor(tpsRandom() * 12)];
-      let j = indices[Math.floor(tpsRandom() * 12)];
-      if (i === j) continue;
-      const needed = getComplementaryCard(board[i], board[j]);
-      const deckIdx = findCardInDeck(deck, needed);
-      if (deckIdx === -1) continue;
-      const candidates = indices.filter(idx => idx !== i && idx !== j);
-      const setCountByPos = {};
-      candidates.forEach(idx => { setCountByPos[idx] = 0; });
-      sets.forEach(([a, b, c]) => {
-        if (setCountByPos[a] !== undefined) setCountByPos[a]++;
-        if (setCountByPos[b] !== undefined) setCountByPos[b]++;
-        if (setCountByPos[c] !== undefined) setCountByPos[c]++;
-      });
-      const minCount = Math.min(...candidates.map(idx => setCountByPos[idx]));
-      const bestK = candidates.filter(idx => setCountByPos[idx] === minCount);
-      const k = bestK[Math.floor(tpsRandom() * bestK.length)];
-      const oldK = board[k];
-      board[k] = deck.splice(deckIdx, 1)[0];
-      deck.push(oldK);
+  let sets = getPossibleSetsIndicesForBoard(boardArr);
+  let diff = Math.abs(sets.length - X);
+  let iter = 0;
+  while (iter < MAX_ITER && diff !== 0) {
+    iter++;
+    let k = -1;
+    let deckIdx = -1;
+    if (sets.length < X) {
+      // Build: scan board pairs in random order for one whose complement is
+      // still in the deck, so the iteration is never wasted on a dead pair.
+      const pairs = [];
+      for (let a = 0; a < positions.length; a++) {
+        for (let b = a + 1; b < positions.length; b++) {
+          pairs.push([positions[a], positions[b]]);
+        }
+      }
+      for (let p = pairs.length - 1; p > 0; p--) {
+        const q = Math.floor(rng() * (p + 1));
+        [pairs[p], pairs[q]] = [pairs[q], pairs[p]];
+      }
+      for (const [i, j] of pairs) {
+        const needed = getComplementaryCard(boardArr[i], boardArr[j]);
+        const idx = findCardInDeck(deckArr, needed);
+        if (idx === -1) continue;
+        deckIdx = idx;
+        // Replace the position participating in the fewest current sets,
+        // to avoid breaking sets we already have.
+        const candidates = positions.filter(pos => pos !== i && pos !== j);
+        const setCountByPos = {};
+        candidates.forEach(pos => { setCountByPos[pos] = 0; });
+        sets.forEach(([a, b, c]) => {
+          if (setCountByPos[a] !== undefined) setCountByPos[a]++;
+          if (setCountByPos[b] !== undefined) setCountByPos[b]++;
+          if (setCountByPos[c] !== undefined) setCountByPos[c]++;
+        });
+        const minCount = Math.min(...candidates.map(pos => setCountByPos[pos]));
+        const bestK = candidates.filter(pos => setCountByPos[pos] === minCount);
+        k = bestK[Math.floor(rng() * bestK.length)];
+        break;
+      }
+    } else if (sets.length > 0) {
+      // Destroy: swap a random card of a random set with a random deck card.
+      const oneSet = sets[Math.floor(rng() * sets.length)];
+      k = oneSet[Math.floor(rng() * 3)];
+      deckIdx = Math.floor(rng() * deckArr.length);
+    }
+    if (k === -1 || deckIdx === -1) {
+      // No guided move available — propose a fully random swap.
+      k = positions[Math.floor(rng() * positions.length)];
+      deckIdx = Math.floor(rng() * deckArr.length);
+    }
+
+    const oldCard = boardArr[k];
+    boardArr[k] = deckArr[deckIdx];
+    deckArr[deckIdx] = oldCard;
+    const newSets = getPossibleSetsIndicesForBoard(boardArr);
+    const newDiff = Math.abs(newSets.length - X);
+    if (newDiff > diff) {
+      deckArr[deckIdx] = boardArr[k];
+      boardArr[k] = oldCard;
     } else {
-      const setList = getPossibleSetsIndices();
-      const oneSet = setList[Math.floor(tpsRandom() * setList.length)];
-      const k = oneSet[Math.floor(tpsRandom() * 3)];
-      const deckIdx = Math.floor(tpsRandom() * deck.length);
-      const oldK = board[k];
-      board[k] = deck[deckIdx];
-      deck[deckIdx] = oldK;
+      sets = newSets;
+      diff = newDiff;
     }
   }
-  return MAX_ITER;
+  return Math.max(iter, 1);
+}
+
+function runPendulumBalancing() {
+  return balanceBoardTowardTarget(board, deck, config.targetPossibleSets, tpsRandom);
 }
