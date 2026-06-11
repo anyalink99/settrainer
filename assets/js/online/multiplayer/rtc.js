@@ -11,6 +11,7 @@ function multiplayerGetPeerEntry(nick, shouldCreate) {
       pendingIceCandidates: [],
       outboundIceCandidates: [],
       iceFlushTimer: null,
+      connectTimer: null,
       offerSent: false,
       answerSent: false,
       lastRemoteOfferSdp: ''
@@ -22,13 +23,25 @@ function multiplayerGetPeerEntry(nick, shouldCreate) {
 function multiplayerCreatePeerConnection(isHost, peerNick) {
   debugLog('Creating peer connection, isHost:', isHost, 'peer:', peerNick || 'host');
 
-  const pc = new RTCPeerConnection({
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' }
-    ]
-  });
+  const pc = new RTCPeerConnection({ iceServers: MULTIPLAYER_ICE_SERVERS });
+
+  // Watchdog: a dead network path (peer's wifi dropped, device slept) often
+  // never fires channel.onclose, but ICE detects it and moves the connection
+  // to 'failed'. 'closed' also lands here when we close the pc ourselves; the
+  // handlers below ignore it because the peer entry / pc reference is gone.
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState !== 'failed' && pc.connectionState !== 'closed') return;
+    if (isHost) {
+      const entry = multiplayerGetPeerEntry(peerNick, false);
+      if (!entry || entry.pc !== pc) return;
+      debugLog('Connection to', peerNick, 'is', pc.connectionState);
+      multiplayerHandlePeerChannelClosed(peerNick);
+      return;
+    }
+    if (MULTIPLAYER_STATE.pc !== pc) return;
+    debugLog('Connection to host is', pc.connectionState);
+    multiplayerHandleClientConnectionFailure();
+  };
 
   pc.onicecandidate = (e) => {
     if (!e.candidate) {
@@ -92,6 +105,14 @@ async function multiplayerStartOffer(targetNick) {
 
   entry.offerSent = true;
   entry.pc = multiplayerCreatePeerConnection(true, targetNick);
+  // If the handshake stalls, drop the half-built peer entry; the poll loop
+  // sees the still-ready peer without a connection and sends a fresh offer.
+  entry.connectTimer = setTimeout(() => {
+    const stale = multiplayerGetPeerEntry(targetNick, false);
+    if (!stale || (stale.channel && stale.channel.readyState === 'open')) return;
+    debugLog('Handshake with', targetNick, 'timed out, retrying');
+    multiplayerCleanupPeerEntry(targetNick);
+  }, MULTIPLAYER_HANDSHAKE_TIMEOUT_MS);
   try {
     const offer = await entry.pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
     await entry.pc.setLocalDescription(offer);
@@ -125,6 +146,13 @@ async function multiplayerHandleOffer(offer, fromNick) {
     await multiplayerSendSignal('answer', JSON.stringify({ to: MULTIPLAYER_STATE.remoteNick, sdp: answer }));
     MULTIPLAYER_STATE.answerSent = true;
     multiplayerSetStatus('Connecting…');
+    if (MULTIPLAYER_STATE.connectionTimeout) clearTimeout(MULTIPLAYER_STATE.connectionTimeout);
+    MULTIPLAYER_STATE.connectionTimeout = setTimeout(() => {
+      MULTIPLAYER_STATE.connectionTimeout = null;
+      if (MULTIPLAYER_STATE.isConnected) return;
+      debugLog('Handshake with host timed out');
+      multiplayerHandleClientConnectionFailure();
+    }, MULTIPLAYER_HANDSHAKE_TIMEOUT_MS);
   } catch (err) {
     console.error('Failed to handle offer:', err);
     multiplayerSetStatus('Connection failed');
@@ -189,19 +217,29 @@ function multiplayerSetupChannel(channel, peerNick) {
     if (MULTIPLAYER_STATE.role === 'host') {
       const entry = multiplayerGetPeerEntry(peerNick, true);
       entry.channel = channel;
+      if (entry.connectTimer) {
+        clearTimeout(entry.connectTimer);
+        entry.connectTimer = null;
+      }
       MULTIPLAYER_STATE.isConnected = true;
       multiplayerSendTo(peerNick, { type: 'hello', nick: MULTIPLAYER_STATE.localNick });
       multiplayerRenderHud();
       multiplayerSyncActionButtons();
       if (typeof multiplayerSyncModal === 'function') multiplayerSyncModal();
       multiplayerStopLobbyListPolling();
+      multiplayerTunePollingInterval();
       multiplayerSetStatus('Connected');
       return;
     }
 
     MULTIPLAYER_STATE.isConnected = true;
+    if (MULTIPLAYER_STATE.connectionTimeout) {
+      clearTimeout(MULTIPLAYER_STATE.connectionTimeout);
+      MULTIPLAYER_STATE.connectionTimeout = null;
+    }
+    MULTIPLAYER_STATE.connectionAttempts = 0;
     multiplayerSetStatus('Connected');
-    multiplayerSlowDownPolling();
+    multiplayerTunePollingInterval();
     multiplayerSend({ type: 'hello', nick: MULTIPLAYER_STATE.localNick });
     multiplayerRenderHud();
     multiplayerSyncActionButtons();

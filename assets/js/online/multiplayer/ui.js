@@ -3,10 +3,10 @@
 function multiplayerGetStatusNickname() {
   if (MULTIPLAYER_STATE.role === 'host') {
     const remotes = Array.isArray(MULTIPLAYER_STATE.remoteNicks) ? MULTIPLAYER_STATE.remoteNicks.filter(Boolean) : [];
-    return remotes.join(', ');
+    return remotes.map(multiplayerDisplayNick).join(', ');
   }
   if (MULTIPLAYER_STATE.role === 'client') {
-    return (MULTIPLAYER_STATE.remoteNick || '').trim();
+    return multiplayerDisplayNick((MULTIPLAYER_STATE.remoteNick || '').trim());
   }
   return '';
 }
@@ -40,7 +40,7 @@ function multiplayerRenderHud() {
     row.className = 'mp-score-row';
     const name = document.createElement('div');
     name.className = 'mp-score-name';
-    name.textContent = nick === local ? 'You' : nick;
+    name.textContent = nick === local ? 'You' : multiplayerDisplayNick(nick);
     const val = document.createElement('div');
     val.className = 'mp-score-val';
     val.textContent = String(scores[nick] ?? 0);
@@ -101,7 +101,7 @@ function multiplayerClearBoard() {
 }
 
 function openMultiplayerModal() {
-  MULTIPLAYER_STATE.localNick = multiplayerGetNickname();
+  MULTIPLAYER_STATE.localNick = multiplayerGetWireNick();
   MULTIPLAYER_STATE.preferRemote = true;
   if (MULTIPLAYER_STATE.prevGameMode == null) {
     MULTIPLAYER_STATE.prevGameMode = config.gameMode === GAME_MODES.MULTIPLAYER ? DEFAULT_GAME_MODE : config.gameMode;

@@ -70,7 +70,17 @@ function multiplayerBroadcastState(reason) {
 }
 
 async function multiplayerApplyState(state, reason) {
-  if (!state || MULTIPLAYER_STATE.isApplyingState) return;
+  if (!state) return;
+  if (MULTIPLAYER_STATE.isApplyingState) {
+    // A snapshot arriving mid-animation must not be dropped: the next event
+    // may be seconds away and the board would stay stale. Keep the newest
+    // one and apply it after the current pass finishes.
+    const pending = MULTIPLAYER_STATE.pendingRemoteState;
+    if (!pending || (state.version || 0) >= (pending.state.version || 0)) {
+      MULTIPLAYER_STATE.pendingRemoteState = { state, reason };
+    }
+    return;
+  }
   if (state.version && state.version <= MULTIPLAYER_STATE.lastStateVersion) return;
   MULTIPLAYER_STATE.lastStateVersion = state.version || MULTIPLAYER_STATE.lastStateVersion;
   MULTIPLAYER_STATE.isApplyingState = true;
@@ -168,6 +178,11 @@ async function multiplayerApplyState(state, reason) {
     MULTIPLAYER_STATE.pendingShuffle = false;
   } finally {
     MULTIPLAYER_STATE.isApplyingState = false;
+    const pending = MULTIPLAYER_STATE.pendingRemoteState;
+    if (pending) {
+      MULTIPLAYER_STATE.pendingRemoteState = null;
+      multiplayerApplyState(pending.state, pending.reason);
+    }
   }
 }
 
@@ -195,8 +210,26 @@ async function multiplayerHandleHostSetFound(sIdx, currentPossible) {
   multiplayerCheckFinish();
 }
 
+function multiplayerWaitForIdleBoard(maxWaitMs) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + maxWaitMs;
+    const tick = () => {
+      if (!isAnimating) return resolve(true);
+      if (Date.now() >= deadline) return resolve(false);
+      setTimeout(tick, 40);
+    };
+    tick();
+  });
+}
+
 async function multiplayerHandleHostClaim(msg) {
   if (!msg || !Array.isArray(msg.indices)) return;
+  // A claim during the host's set animation used to be rejected as 'busy',
+  // silently eating valid finds. Wait the animation out and validate against
+  // the settled board instead; stale claims then fail cleanly as 'wrong'.
+  if (isAnimating && !isGameOver) {
+    await multiplayerWaitForIdleBoard(1500);
+  }
   if (isAnimating || isGameOver) {
     multiplayerSendTo(msg.nick, { type: 'claim_result', ok: false, reason: 'busy' });
     return;
@@ -245,46 +278,14 @@ async function multiplayerHandleClientSelection(idx, el) {
     return;
   }
   if (MULTIPLAYER_STATE.pendingClaim || isAnimating || isGameOver) return;
-  if (selected.includes(idx)) {
-    selected = selected.filter(i => i !== idx);
-    el.classList.remove('selected');
-    return;
-  }
-  selected.push(idx);
-  el.classList.add('selected');
 
   const currentPossible = analyzePossibleSets().total;
+  const sIdx = await toggleCardSelection(idx, el);
+  if (!sIdx) return;
 
-  if (selected.length === 2 && config.autoSelectThird) {
-    const c1 = board[selected[0]];
-    const c2 = board[selected[1]];
-    const target = {};
-    ['c', 's', 'f', 'n'].forEach(p => { target[p] = (3 - (c1[p] + c2[p]) % 3) % 3; });
-    let thirdIdx = -1;
-    for (let i = 0; i < board.length; i++) {
-      if (!board[i] || selected.includes(i)) continue;
-      if (['c', 's', 'f', 'n'].every(p => board[i][p] === target[p])) { thirdIdx = i; break; }
-    }
-    if (thirdIdx !== -1) {
-      const thirdEl = document.getElementById('board').children[thirdIdx].querySelector('.card');
-      selected.push(thirdIdx);
-      thirdEl.classList.add('selected');
-    } else {
-      mistakes++;
-      isAnimating = true;
-      await new Promise(r => setTimeout(r, GAME_CONFIG.MISTAKE_DELAY));
-      selected.forEach(i => document.getElementById('board').children[i].querySelector('.card')?.classList.remove('selected'));
-      selected = [];
-      isAnimating = false;
-      return;
-    }
-  }
-
-  if (selected.length === 3) {
-    isAnimating = true;
-    MULTIPLAYER_STATE.pendingClaim = true;
-    multiplayerSend({ type: 'claim', nick: MULTIPLAYER_STATE.localNick, indices: [...selected], possibleAtStart: currentPossible });
-  }
+  isAnimating = true;
+  MULTIPLAYER_STATE.pendingClaim = true;
+  multiplayerSend({ type: 'claim', nick: MULTIPLAYER_STATE.localNick, indices: sIdx, possibleAtStart: currentPossible });
 }
 
 function multiplayerRequestShuffle() {
@@ -400,7 +401,7 @@ function multiplayerShowResult(summary) {
   if (!summary) summary = multiplayerBuildSummary();
   const winnerEl = document.getElementById('multiplayer-result-winner');
   if (winnerEl) {
-    const label = summary.winner === 'Tie' ? 'Tie' : (summary.winner || '—');
+    const label = summary.winner === 'Tie' ? 'Tie' : (multiplayerDisplayNick(summary.winner) || '—');
     winnerEl.textContent = 'Winner: ' + label;
   }
   const list = document.getElementById('multiplayer-result-scores');
@@ -412,7 +413,7 @@ function multiplayerShowResult(summary) {
       row.className = 'mp-result-row';
       const name = document.createElement('div');
       name.className = 'mp-score-name';
-      name.textContent = nick === MULTIPLAYER_STATE.localNick ? 'You' : nick;
+      name.textContent = nick === MULTIPLAYER_STATE.localNick ? 'You' : multiplayerDisplayNick(nick);
       const val = document.createElement('div');
       val.className = 'mp-score-val';
       val.textContent = String(scores[nick] ?? 0);
@@ -437,7 +438,7 @@ function multiplayerStartMatch() {
   if (!multiplayerIsHost()) return;
   MULTIPLAYER_STATE.preferRemote = false;
   MULTIPLAYER_STATE.startEpoch = Date.now();
-  const hostNick = MULTIPLAYER_STATE.localNick || multiplayerGetNickname();
+  const hostNick = MULTIPLAYER_STATE.localNick || multiplayerGetWireNick();
   const participants = [hostNick, ...(Array.isArray(MULTIPLAYER_STATE.remoteNicks) ? MULTIPLAYER_STATE.remoteNicks : [])]
     .map((n) => String(n || '').trim())
     .filter(Boolean)

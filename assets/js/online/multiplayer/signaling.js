@@ -1,7 +1,7 @@
 /** Auto-split from multiplayer.js */
 
 const MULTIPLAYER_POLL_INTERVAL_FAST_MS = 150;
-const MULTIPLAYER_POLL_INTERVAL_CONNECTED_MS = 500;
+const MULTIPLAYER_POLL_INTERVAL_IDLE_MS = 2000;
 
 function multiplayerResetConnectionState() {
   MULTIPLAYER_STATE.isConnected = false;
@@ -18,9 +18,15 @@ function multiplayerResetConnectionState() {
       try { entry.pc.close(); } catch (_) {}
     }
     if (entry && entry.iceFlushTimer) clearTimeout(entry.iceFlushTimer);
+    if (entry && entry.connectTimer) clearTimeout(entry.connectTimer);
   });
 
   MULTIPLAYER_STATE.peerConnections = {};
+  if (MULTIPLAYER_STATE.connectionTimeout) {
+    clearTimeout(MULTIPLAYER_STATE.connectionTimeout);
+    MULTIPLAYER_STATE.connectionTimeout = null;
+  }
+  MULTIPLAYER_STATE.pendingRemoteState = null;
   MULTIPLAYER_STATE.processedSignals = new Set();
   MULTIPLAYER_STATE.pendingClaim = false;
   MULTIPLAYER_STATE.pendingShuffle = false;
@@ -32,6 +38,7 @@ function multiplayerResetConnectionState() {
   MULTIPLAYER_STATE.remoteNicks = [];
   MULTIPLAYER_STATE.offerSent = false;
   MULTIPLAYER_STATE.answerSent = false;
+  MULTIPLAYER_STATE.lastRemoteOfferSdp = '';
   MULTIPLAYER_STATE.pendingIceCandidates = [];
   MULTIPLAYER_STATE.outboundIceCandidates = [];
   if (MULTIPLAYER_STATE.iceFlushTimer) {
@@ -48,15 +55,32 @@ function multiplayerStopPolling() {
 
 function multiplayerStartPolling() {
   multiplayerStopPolling();
+  MULTIPLAYER_STATE.pollIntervalMs = MULTIPLAYER_POLL_INTERVAL_FAST_MS;
   MULTIPLAYER_STATE.pollTimer = setInterval(multiplayerPollLobby, MULTIPLAYER_POLL_INTERVAL_FAST_MS);
   multiplayerPollLobby();
 }
 
-function multiplayerSlowDownPolling() {
-  if (MULTIPLAYER_STATE.pollTimer) {
-    clearInterval(MULTIPLAYER_STATE.pollTimer);
-    MULTIPLAYER_STATE.pollTimer = setInterval(multiplayerPollLobby, MULTIPLAYER_POLL_INTERVAL_CONNECTED_MS);
+// The lobby is only needed for signaling: fast polling while a handshake is
+// in flight, slow for a host waiting for new players, none at all for a
+// connected client (gameplay runs over the data channel).
+function multiplayerTunePollingInterval() {
+  let desired;
+  if (MULTIPLAYER_STATE.role === 'host') {
+    const remotes = MULTIPLAYER_STATE.remoteNicks || [];
+    const handshakeInFlight = remotes.some((nick) => {
+      if (!MULTIPLAYER_STATE.remoteReadyByNick[nick]) return false;
+      const entry = (MULTIPLAYER_STATE.peerConnections || {})[nick];
+      return !entry || !entry.channel || entry.channel.readyState !== 'open';
+    });
+    desired = handshakeInFlight ? MULTIPLAYER_POLL_INTERVAL_FAST_MS : MULTIPLAYER_POLL_INTERVAL_IDLE_MS;
+  } else {
+    desired = MULTIPLAYER_STATE.isConnected ? 0 : MULTIPLAYER_POLL_INTERVAL_FAST_MS;
   }
+  const current = MULTIPLAYER_STATE.pollTimer ? MULTIPLAYER_STATE.pollIntervalMs : 0;
+  if (desired === current) return;
+  MULTIPLAYER_STATE.pollIntervalMs = desired;
+  if (MULTIPLAYER_STATE.pollTimer) clearInterval(MULTIPLAYER_STATE.pollTimer);
+  MULTIPLAYER_STATE.pollTimer = desired > 0 ? setInterval(multiplayerPollLobby, desired) : null;
 }
 
 function multiplayerRetryConnection() {
@@ -101,6 +125,7 @@ async function multiplayerPollLobby() {
     console.warn('Poll error:', err);
   } finally {
     MULTIPLAYER_STATE.pollInFlight = false;
+    multiplayerTunePollingInterval();
   }
 }
 

@@ -237,31 +237,18 @@ async function applySetToBoard(sIdx) {
   updateUI();
 }
 
-async function handleCardSelect(idx, el) {
-  if (isAnimating || isGameOver) return;
-  if (isMultiplayerModeActive() && typeof multiplayerIsClient === 'function' && multiplayerIsClient()) {
-    if (typeof multiplayerHandleClientSelection === 'function') {
-      await multiplayerHandleClientSelection(idx, el);
-    }
-    return;
-  }
-
+async function toggleCardSelection(idx, el) {
   if (selected.includes(idx)) {
     selected = selected.filter(i => i !== idx);
     el.classList.remove('selected');
-    return;
+    return null;
   }
 
   selected.push(idx);
   el.classList.add('selected');
 
-  const currentPossible = analyzePossibleSets().total;
-
   if (selected.length === 2 && config.autoSelectThird) {
-    const c1 = board[selected[0]];
-    const c2 = board[selected[1]];
-    const target = {};
-    ['c', 's', 'f', 'n'].forEach(p => { target[p] = (3 - (c1[p] + c2[p]) % 3) % 3; });
+    const target = getComplementaryCard(board[selected[0]], board[selected[1]]);
     let thirdIdx = -1;
     for (let i = 0; i < board.length; i++) {
       if (!board[i] || selected.includes(i)) continue;
@@ -278,44 +265,57 @@ async function handleCardSelect(idx, el) {
       selected.forEach(i => document.getElementById('board').children[i].querySelector('.card')?.classList.remove('selected'));
       selected = [];
       isAnimating = false;
-      return;
+      return null;
     }
   }
 
-  if (selected.length === 3) {
-    isAnimating = true;
-    const sIdx = [...selected];
-    const cards = sIdx.map(i => board[i]);
-    const isCorrect = validateSet(cards);
-    if (isCorrect) {
-      if (isMultiplayerModeActive() && typeof multiplayerHandleHostSetFound === 'function') {
-        await multiplayerHandleHostSetFound(sIdx, currentPossible);
-        return;
-      }
-      collectedSets++;
-      const now = Date.now();
-      const findTime = now - lastSetFoundTime;
-      setTimestamps.push({ time: now, findTime: findTime, possibleAtStart: currentPossible });
-      trainingRecordSetIfNeeded(findTime);
-      lastSetFoundTime = now;
+  return selected.length === 3 ? [...selected] : null;
+}
 
-      if (isTrainingModeActive()) {
-        selected = [];
-        isAnimating = false;
-        trainingHandleCorrectSet(findTime);
-        return;
-      }
-      await applySetToBoard(sIdx);
-      if (collectedSets >= GAME_CONFIG.SETS_TO_WIN && analyzePossibleSets().total === 0 && !isGameOver) {
-        setTimeout(() => handleGameFinish(true), 300);
-      }
-    } else {
-      mistakes++;
-      await new Promise(r => setTimeout(r, GAME_CONFIG.MISTAKE_DELAY));
-      sIdx.forEach(i => document.getElementById('board').children[i].querySelector('.card')?.classList.remove('selected'));
+async function handleCardSelect(idx, el) {
+  if (isAnimating || isGameOver) return;
+  if (isMultiplayerModeActive() && typeof multiplayerIsClient === 'function' && multiplayerIsClient()) {
+    if (typeof multiplayerHandleClientSelection === 'function') {
+      await multiplayerHandleClientSelection(idx, el);
+    }
+    return;
+  }
+
+  const currentPossible = analyzePossibleSets().total;
+  const sIdx = await toggleCardSelection(idx, el);
+  if (!sIdx) return;
+
+  isAnimating = true;
+  const cards = sIdx.map(i => board[i]);
+  const isCorrect = validateSet(cards);
+  if (isCorrect) {
+    if (isMultiplayerModeActive() && typeof multiplayerHandleHostSetFound === 'function') {
+      await multiplayerHandleHostSetFound(sIdx, currentPossible);
+      return;
+    }
+    collectedSets++;
+    const now = Date.now();
+    const findTime = now - lastSetFoundTime;
+    setTimestamps.push({ time: now, findTime: findTime, possibleAtStart: currentPossible });
+    trainingRecordSetIfNeeded(findTime);
+    lastSetFoundTime = now;
+
+    if (isTrainingModeActive()) {
       selected = [];
       isAnimating = false;
+      trainingHandleCorrectSet(findTime);
+      return;
     }
+    await applySetToBoard(sIdx);
+    if (collectedSets >= GAME_CONFIG.SETS_TO_WIN && analyzePossibleSets().total === 0 && !isGameOver) {
+      setTimeout(() => handleGameFinish(true), 300);
+    }
+  } else {
+    mistakes++;
+    await new Promise(r => setTimeout(r, GAME_CONFIG.MISTAKE_DELAY));
+    sIdx.forEach(i => document.getElementById('board').children[i].querySelector('.card')?.classList.remove('selected'));
+    selected = [];
+    isAnimating = false;
   }
 }
 
@@ -358,7 +358,7 @@ function handleShuffleClick() {
   if (possibleCount > 0) {
     badShuffles++;
     if (isMultiplayerModeActive() && typeof multiplayerApplyBadShufflePenalty === 'function') {
-      multiplayerApplyBadShufflePenalty(multiplayerGetNickname());
+      multiplayerApplyBadShufflePenalty(MULTIPLAYER_STATE.localNick);
     }
     updateUI();
     if (!config.showPossible && !config.autoShuffle) showToast('bad shuffle!');
@@ -373,7 +373,7 @@ function handleShuffleClick() {
   }
 
   if (possibleCount === 0 && isMultiplayerModeActive() && typeof multiplayerIsHost === 'function' && multiplayerIsHost() && typeof multiplayerAwardNoSetShufflePoint === 'function') {
-    multiplayerAwardNoSetShufflePoint(multiplayerGetNickname());
+    multiplayerAwardNoSetShufflePoint(MULTIPLAYER_STATE.localNick);
   }
 
   const { fadeOutMs, animInMs } = getShuffleDurations();

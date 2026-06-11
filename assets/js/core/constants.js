@@ -86,6 +86,21 @@ const DEFAULT_BINDS_HORIZONTAL = {
 const ONLINE_LEADERBOARD_URL = 'https://script.google.com/macros/s/AKfycbzs-XcC56kdbxwz8cNTeGUbJxdDmzw0W8U1WNm7bY896r2iFok2cX0bpDiYCBIdc6eKIA/exec';
 const ONLINE_LOBBY_URL = 'https://script.google.com/macros/s/AKfycbwIeoG6dtqb7Lb-Xy-3r7v5wWyxTy3KAZ4Rod5IFZwiLPMKI2WPH5uxtKy7V0EWq9cP/exec';
 
+// STUN resolves public addresses; TURN relays traffic when direct P2P is
+// impossible (e.g. both peers behind symmetric NAT on mobile networks).
+// Unreachable servers are skipped by ICE, so a dead entry only slows down
+// candidate gathering, it does not break connections.
+const MULTIPLAYER_ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+];
+
+const MULTIPLAYER_HANDSHAKE_TIMEOUT_MS = 30000;
+const MULTIPLAYER_MAX_CONNECTION_RETRIES = 2;
+
 const SVG_ICONS = {
   SETTINGS: '<svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.91,7.62,6.29L5.23,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.72,8.87 c-0.11,0.2-0.06,0.47,0.12,0.61l2.03,1.58C4.84,11.36,4.81,11.66,4.81,12c0,0.33,0.02,0.64,0.07,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.5c-1.93,0-3.5-1.57-3.5-3.5 s1.57-3.5,3.5-3.5s3.5,1.57,3.5,3.5S13.93,15.5,12,15.5z"/></svg>',
   MORE_DETAILS: '<svg width="20" height="20" fill="currentColor" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>',

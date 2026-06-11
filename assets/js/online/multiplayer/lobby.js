@@ -101,7 +101,7 @@ function multiplayerRenderLobbyList() {
 
     const nickEl = document.createElement('div');
     nickEl.className = 'multiplayer-lobby-host';
-    nickEl.textContent = hostNick;
+    nickEl.textContent = multiplayerDisplayNick(hostNick);
 
     const idEl = document.createElement('div');
     idEl.className = 'multiplayer-lobby-id';
@@ -151,7 +151,7 @@ async function multiplayerHostLobby() {
     return;
   }
 
-  const nick = multiplayerGetNickname();
+  const nick = multiplayerGetWireNick();
   MULTIPLAYER_STATE.localNick = nick;
   multiplayerSetStatus('Creating lobby…');
   try {
@@ -186,7 +186,7 @@ async function multiplayerJoinLobby(selectedLobbyId, selectedHostNick) {
     return;
   }
 
-  const nick = multiplayerGetNickname();
+  const nick = multiplayerGetWireNick();
   MULTIPLAYER_STATE.localNick = nick;
   MULTIPLAYER_STATE.selectedLobbyId = lobbyId;
   MULTIPLAYER_STATE.selectedLobbyHostNick = String(selectedHostNick || '').trim();
@@ -198,20 +198,19 @@ async function multiplayerJoinLobby(selectedLobbyId, selectedHostNick) {
     multiplayerResetConnectionState();
     MULTIPLAYER_STATE.role = 'client';
     MULTIPLAYER_STATE.lobbyId = lobbyId;
+    MULTIPLAYER_STATE.connectionAttempts = 0;
     MULTIPLAYER_STATE.connectionState = 'waiting_ready';
     debugLog('Joined lobby:', lobbyId);
     multiplayerSetStatus('Joined. Preparing connection…');
     multiplayerSyncModal();
     multiplayerStartPolling();
-    setTimeout(() => {
-      MULTIPLAYER_STATE.isReady = true;
-      multiplayerSendSignal('ready', 'true').then(() => {
-        debugLog('Ready signal sent');
-        multiplayerSetStatus('Ready. Waiting for host…');
-      }).catch(err => {
-        console.error('Failed to send ready signal:', err);
-      });
-    }, 500);
+    MULTIPLAYER_STATE.isReady = true;
+    multiplayerSendSignal('ready', 'true').then(() => {
+      debugLog('Ready signal sent');
+      multiplayerSetStatus('Ready. Waiting for host…');
+    }).catch(err => {
+      console.error('Failed to send ready signal:', err);
+    });
   } catch (err) {
     console.error('Failed to join lobby:', err);
     multiplayerSetStatus('Failed to join lobby');

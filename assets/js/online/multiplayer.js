@@ -13,9 +13,14 @@
  *
  * - Connection setup:
  *   - Peers exchange readiness and signaling payloads through the lobby API.
- *   - WebRTC data channels are used for real-time gameplay communication.
- *   - Connection retries, ICE batching, and adaptive polling are used to make
- *     setup more resilient on unstable networks.
+ *   - WebRTC data channels are used for real-time gameplay communication
+ *     (STUN + TURN, see MULTIPLAYER_ICE_SERVERS in constants.js).
+ *   - Players are addressed by a "wire nick" (display name + random session
+ *     tag) so identical nicknames don't collide; the tag is stripped in UI.
+ *   - Handshake timeouts, a connection-state watchdog, ICE batching, and
+ *     adaptive polling make setup and disconnects resilient: lobby polling
+ *     runs fast only while a handshake is in flight, slows for an idle host,
+ *     and stops entirely for a connected client.
  *
  * - Match authority and state replication:
  *   - Host is authoritative for deck/board transitions and scoring outcomes.
@@ -25,8 +30,9 @@
  * - UX and teardown behavior:
  *   - Multiplayer and settings overlays are closed automatically when a match
  *     starts.
- *   - On leave or peer disconnect, multiplayer state is fully reset, the game
- *     is forced back to Normal mode, and the session restarts with a toast.
+ *   - When a single peer leaves, only that peer is cleaned up; the session is
+ *     fully reset (back to Normal mode, with a toast) when the last peer or
+ *     the host disconnects.
  *
  * Dependencies:
  * - Global game state/UI helpers from game-logic.js, settings.js, modal-management.js.
@@ -40,6 +46,7 @@ const MULTIPLAYER_STATE = {
   pc: null,
   channel: null,
   pollTimer: null,
+  pollIntervalMs: 0,
   pollInFlight: false,
   processedSignals: new Set(),
   isConnected: false,
@@ -56,6 +63,7 @@ const MULTIPLAYER_STATE = {
   startEpoch: 0,
   pendingClaim: false,
   pendingShuffle: false,
+  pendingRemoteState: null,
   preferRemote: false,
   prevGameMode: null,
   lastStateVersion: 0,
@@ -87,6 +95,32 @@ const MULTIPLAYER_STATE = {
 
 const MULTIPLAYER_LOBBY_MAX_AGE_MS = 3 * 60 * 1000;
 const MULTIPLAYER_LOBBY_ALWAYS_INCLUDE_RECENT = 2;
+
+// Players are addressed by "wire nick": display nickname plus a random
+// session tag (e.g. "Alex#k3f9"). Signals routing, peer entries and scores
+// key off the wire nick so two players with the same display name don't
+// collide; the tag is stripped everywhere a name is shown. The tag lives in
+// sessionStorage so a page refresh rejoins under the same identity instead
+// of leaving a ghost player in the lobby.
+const MULTIPLAYER_SESSION_TAG = (() => {
+  try {
+    const existing = sessionStorage.getItem('mpSessionTag');
+    if (existing) return existing;
+    const tag = Math.random().toString(36).slice(2, 6);
+    sessionStorage.setItem('mpSessionTag', tag);
+    return tag;
+  } catch (_) {
+    return Math.random().toString(36).slice(2, 6);
+  }
+})();
+
+function multiplayerGetWireNick() {
+  return multiplayerGetNickname() + '#' + MULTIPLAYER_SESSION_TAG;
+}
+
+function multiplayerDisplayNick(nick) {
+  return String(nick || '').replace(/#[a-z0-9]{4}$/i, '');
+}
 
 
 function multiplayerIsHost() {
@@ -230,17 +264,43 @@ function multiplayerHandlePeerDisconnect() {
   if (wasConnected && typeof showToast === 'function') showToast('Opponent left. Switched to Normal mode and restarted game');
 }
 
-function multiplayerHandlePeerChannelClosed(peerNick) {
-  if (MULTIPLAYER_STATE.role !== 'host') return;
+function multiplayerHandleClientConnectionFailure() {
+  if (MULTIPLAYER_STATE.role !== 'client') return;
+  // An established session that died is a disconnect; a handshake that never
+  // completed gets a couple of silent retries (signals replay from the lobby
+  // log after the reset, so the handshake restarts on its own).
+  if (MULTIPLAYER_STATE.isConnected) {
+    multiplayerHandlePeerDisconnect();
+    return;
+  }
+  if ((MULTIPLAYER_STATE.connectionAttempts || 0) < MULTIPLAYER_MAX_CONNECTION_RETRIES) {
+    MULTIPLAYER_STATE.connectionAttempts = (MULTIPLAYER_STATE.connectionAttempts || 0) + 1;
+    debugLog('Retrying connection, attempt', MULTIPLAYER_STATE.connectionAttempts);
+    multiplayerRetryConnection();
+    return;
+  }
+  multiplayerSetStatus('Connection failed');
+  if (typeof showToast === 'function') showToast('Could not connect to host');
+}
+
+function multiplayerCleanupPeerEntry(peerNick) {
   const key = String(peerNick || '').trim();
   const peers = MULTIPLAYER_STATE.peerConnections || {};
   const entry = peers[key];
-  if (!entry) return;
+  if (!entry) return false;
   if (entry.pc) {
     try { entry.pc.close(); } catch (_) {}
   }
   if (entry.iceFlushTimer) clearTimeout(entry.iceFlushTimer);
+  if (entry.connectTimer) clearTimeout(entry.connectTimer);
   delete peers[key];
+  return true;
+}
+
+function multiplayerHandlePeerChannelClosed(peerNick) {
+  if (MULTIPLAYER_STATE.role !== 'host') return;
+  const key = String(peerNick || '').trim();
+  if (!multiplayerCleanupPeerEntry(key)) return;
   MULTIPLAYER_STATE.remoteNicks = (MULTIPLAYER_STATE.remoteNicks || []).filter(n => n !== key);
   MULTIPLAYER_STATE.remoteNick = MULTIPLAYER_STATE.remoteNicks[0] || '';
   if (MULTIPLAYER_STATE.remoteReadyByNick) delete MULTIPLAYER_STATE.remoteReadyByNick[key];
@@ -250,7 +310,7 @@ function multiplayerHandlePeerChannelClosed(peerNick) {
     return;
   }
 
-  if (typeof showToast === 'function') showToast(key + ' left the game');
+  if (typeof showToast === 'function') showToast(multiplayerDisplayNick(key) + ' left the game');
   multiplayerRenderHud();
   multiplayerSyncActionButtons();
   if (typeof multiplayerSyncModal === 'function') multiplayerSyncModal();
