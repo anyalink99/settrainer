@@ -22,12 +22,7 @@ function createDeck(rng) {
       }
     }
   }
-  const randomFunc = rng != null ? rng : Math.random;
-  for (let i = d.length - 1; i > 0; i--) {
-    const j = Math.floor(randomFunc() * (i + 1));
-    [d[i], d[j]] = [d[j], d[i]];
-  }
-  return d;
+  return shuffleInPlace(d, rng);
 }
 
 function renderDebugTPSInfo(iters, label) {
@@ -214,8 +209,10 @@ async function applySetToBoard(sIdx) {
         updateSlot(slot, true);
       });
       if (config.debugMode) {
-        const label = result.perfect ? 'perfect' : 'closest';
-        setDebugTPSIters(result.iterations, 'replenish ' + label);
+        const label = result.perfect
+          ? 'replenish perfect: ' + result.matches + '/' + result.iterations + ' triples'
+          : 'replenish closest: ±' + result.diff + ' (' + result.matches + ' options)';
+        setDebugTPSIters(null, label);
       }
     } else {
       setDebugTPSIters(null);
@@ -418,6 +415,25 @@ function shuffleExistingCards() {
   }, GAME_CONFIG.SHUFFLE_DELAY);
 }
 
+function reshuffleBoardIntoDeck() {
+  const currentCards = board.filter(c => c !== null);
+  deck.push(...currentCards);
+  shuffleInPlace(deck, gameSeededRng);
+  board = deck.splice(0, 12);
+  if (config.targetPossibleSets) {
+    const iters = runPendulumBalancing();
+    if (iters > 0) setDebugTPSIters(iters);
+  }
+  selected = [];
+  for (let i = 0; i < 12; i++) updateSlot(i, true);
+}
+
+function broadcastShuffleIfHost(reason) {
+  if (isMultiplayerModeActive() && typeof multiplayerBroadcastState === 'function' && multiplayerIsHost()) {
+    multiplayerBroadcastState(reason);
+  }
+}
+
 function handleShuffleDeck(isAuto = false, fromSet = false, skipAnimOut = false) {
   if (isAnimating) return;
   if (isTrainingModeActive()) return;
@@ -430,105 +446,35 @@ function handleShuffleDeck(isAuto = false, fromSet = false, skipAnimOut = false)
   if (isAuto && skipAnimOut) {
     isAnimating = true;
     const { animInMs } = getShuffleDurations();
-    const currentCards = board.filter(c => c !== null);
-    deck.push(...currentCards);
-    deck.sort(() => (gameSeededRng || Math.random)() - 0.5);
-    board = deck.splice(0, 12);
-    if (config.targetPossibleSets) {
-      const iters = runPendulumBalancing();
-      if (iters > 0) setDebugTPSIters(iters);
-    }
-    selected = [];
-
-    for (let i = 0; i < 12; i++) updateSlot(i, true);
-
+    reshuffleBoardIntoDeck();
     setTimeout(() => {
       isAnimating = false;
       nextAutoShuffleSkipsAnimOut = true;
       updateUI();
-      if (isMultiplayerModeActive() && typeof multiplayerBroadcastState === 'function' && multiplayerIsHost()) {
-        multiplayerBroadcastState('shuffle_auto');
-      }
+      broadcastShuffleIfHost('shuffle_auto');
     }, animInMs);
     return;
   }
 
   if (isAuto && !fromSet) {
-    const currentCards = board.filter(c => c !== null);
-    deck.push(...currentCards);
-    deck.sort(() => (gameSeededRng || Math.random)() - 0.5);
-    board = deck.splice(0, 12);
-    if (config.targetPossibleSets) {
-      const iters = runPendulumBalancing();
-      if (iters > 0) setDebugTPSIters(iters);
-    }
-    selected = [];
-
-    for (let i = 0; i < 12; i++) updateSlot(i, true);
-
+    reshuffleBoardIntoDeck();
     updateUI();
-    if (isMultiplayerModeActive() && typeof multiplayerBroadcastState === 'function' && multiplayerIsHost()) {
-      multiplayerBroadcastState('shuffle_auto');
-    }
-    return;
-  }
-
-  if (isAuto && fromSet) {
-    isAnimating = true;
-    const { fadeOutMs } = getShuffleDurations();
-
-    document.querySelectorAll('.card')
-      .forEach(c => c.classList.add('anim-out'));
-
-    setTimeout(() => {
-      const currentCards = board.filter(c => c !== null);
-      deck.push(...currentCards);
-      deck.sort(() => (gameSeededRng || Math.random)() - 0.5);
-      board = deck.splice(0, 12);
-      if (config.targetPossibleSets) {
-        const iters = runPendulumBalancing();
-        if (iters > 0) setDebugTPSIters(iters);
-      }
-      selected = [];
-
-      for (let i = 0; i < 12; i++) updateSlot(i, true);
-
-      nextAutoShuffleSkipsAnimOut = true;
-      isAnimating = false;
-      updateUI();
-      if (isMultiplayerModeActive() && typeof multiplayerBroadcastState === 'function' && multiplayerIsHost()) {
-        multiplayerBroadcastState('shuffle_auto');
-      }
-    }, fadeOutMs);
-
+    broadcastShuffleIfHost('shuffle_auto');
     return;
   }
 
   isAnimating = true;
-
   const { fadeOutMs } = getShuffleDurations();
 
   document.querySelectorAll('.card')
     .forEach(c => c.classList.add('anim-out'));
 
   setTimeout(() => {
-    const currentCards = board.filter(c => c !== null);
-    deck.push(...currentCards);
-    deck.sort(() => (gameSeededRng || Math.random)() - 0.5);
-    board = deck.splice(0, 12);
-    if (config.targetPossibleSets) {
-      const iters = runPendulumBalancing();
-      if (iters > 0) setDebugTPSIters(iters);
-    }
-    selected = [];
-
-    for (let i = 0; i < 12; i++) updateSlot(i, true);
-
+    reshuffleBoardIntoDeck();
+    if (isAuto) nextAutoShuffleSkipsAnimOut = true;
     isAnimating = false;
     updateUI();
-    if (isMultiplayerModeActive() && typeof multiplayerBroadcastState === 'function' && multiplayerIsHost()) {
-      multiplayerBroadcastState('shuffle_manual');
-    }
+    broadcastShuffleIfHost(isAuto ? 'shuffle_auto' : 'shuffle_manual');
   }, fadeOutMs);
 }
 

@@ -338,6 +338,31 @@ function updateGameColor(index, hex) {
   refreshBoardAppearancePreviews();
 }
 
+function appendRecordSection(container, title, headerClassName, records) {
+  if (records.length === 0) return;
+  const header = document.createElement('div');
+  header.className = headerClassName;
+  header.innerText = title;
+  container.appendChild(header);
+
+  records.forEach(r => {
+    const item = document.createElement('div');
+    item.className = 'record-item';
+    item.innerHTML = `
+      <div class="record-info">
+        <div class="record-val">${escapeHtml(String(r.sets))} Sets ${r.isSeed ? '🧬' : ''}</div>
+        <div class="text-[10px] uppercase opacity-70">${escapeHtml(String(r.date || ''))}</div>
+      </div>
+      <div class="record-info text-right flex-grow flex justify-end items-center mr-2">
+        <div class="text-white font-mono text-lg leading-none">${formatTime(r.time, true)}</div>
+      </div>
+      <div class="btn-del" onpointerdown="handleRecordDelete(event, ${Number(r.id) || 0})">${SVG_ICONS.DELETE}</div>
+    `;
+    bindRecordItemTap(item, r);
+    container.appendChild(item);
+  });
+}
+
 function openRecordsModal() {
   const records = Storage.getJSON(STORAGE_KEYS.RECORDS, []);
 
@@ -356,53 +381,8 @@ function openRecordsModal() {
     return;
   }
 
-  if (finishes.length > 0) {
-    const finishHeader = document.createElement('div');
-    finishHeader.className = 'text-pink-400 font-black uppercase text-sm mb-2 mt-4 first:mt-0 tracking-wider';
-    finishHeader.innerText = 'Finishes';
-    container.appendChild(finishHeader);
-
-    finishes.forEach(r => {
-      const item = document.createElement('div');
-      item.className = 'record-item';
-      item.innerHTML = `
-        <div class="record-info">
-          <div class="record-val">${r.sets} Sets ${r.isSeed ? '🧬' : ''}</div>
-          <div class="text-[10px] uppercase opacity-70">${r.date}</div>
-        </div>
-        <div class="record-info text-right flex-grow flex justify-end items-center mr-2">
-          <div class="text-white font-mono text-lg leading-none">${formatTime(r.time, true)}</div>
-        </div>
-        <div class="btn-del" onpointerdown="handleRecordDelete(event, ${r.id})">${SVG_ICONS.DELETE}</div>
-      `;
-      bindRecordItemTap(item, r);
-      container.appendChild(item);
-    });
-  }
-
-  if (others.length > 0) {
-    const othersHeader = document.createElement('div');
-    othersHeader.className = 'text-gray-400 font-black uppercase text-sm mb-2 mt-6 tracking-wider';
-    othersHeader.innerText = 'Other Records';
-    container.appendChild(othersHeader);
-
-    others.forEach(r => {
-      const item = document.createElement('div');
-      item.className = 'record-item';
-      item.innerHTML = `
-        <div class="record-info">
-          <div class="record-val">${r.sets} Sets ${r.isSeed ? '🧬' : ''}</div>
-          <div class="text-[10px] uppercase opacity-70">${r.date}</div>
-        </div>
-        <div class="record-info text-right flex-grow flex justify-end items-center mr-2">
-          <div class="text-white font-mono text-lg leading-none">${formatTime(r.time, true)}</div>
-        </div>
-        <div class="btn-del" onpointerdown="handleRecordDelete(event, ${r.id})">${SVG_ICONS.DELETE}</div>
-      `;
-      bindRecordItemTap(item, r);
-      container.appendChild(item);
-    });
-  }
+  appendRecordSection(container, 'Finishes', 'text-pink-400 font-black uppercase text-sm mb-2 mt-4 first:mt-0 tracking-wider', finishes);
+  appendRecordSection(container, 'Other Records', 'text-gray-400 font-black uppercase text-sm mb-2 mt-6 tracking-wider', others);
 
   openModal('records-modal');
 }

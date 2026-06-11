@@ -218,7 +218,8 @@ async function multiplayerHandleHostClaim(msg) {
     return;
   }
   isAnimating = true;
-  selected.forEach(i => document.getElementById('board').children[i].querySelector('.card')?.classList.remove('selected'));
+  const boardEl = document.getElementById('board');
+  selected.forEach(i => boardEl?.children[i]?.querySelector('.card')?.classList.remove('selected'));
   selected = [];
   const possibleAtStart = analyzePossibleSets().total;
   const nick = String((msg && msg.nick) || (msg && msg.__from) || MULTIPLAYER_STATE.remoteNick || 'Guest');
@@ -230,7 +231,8 @@ async function multiplayerHandleHostClaim(msg) {
 
 function multiplayerHandleClaimResult(msg) {
   MULTIPLAYER_STATE.pendingClaim = false;
-  selected.forEach(i => document.getElementById('board').children[i].querySelector('.card')?.classList.remove('selected'));
+  const boardEl = document.getElementById('board');
+  selected.forEach(i => boardEl?.children[i]?.querySelector('.card')?.classList.remove('selected'));
   selected = [];
   isAnimating = false;
   if (!msg || msg.ok) return;

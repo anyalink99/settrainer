@@ -39,6 +39,21 @@ function validateSet(cards) {
   return ['c','s','f','n'].every(p => (cards[0][p] + cards[1][p] + cards[2][p]) % 3 === 0);
 }
 
+function shuffleInPlace(arr, rng) {
+  const randomFunc = rng != null ? rng : Math.random;
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(randomFunc() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
 function normalizeAppsScriptExecUrl(rawUrl) {
   const url = typeof rawUrl === 'string' ? rawUrl.trim() : '';
   if (!url) return '';

@@ -166,11 +166,13 @@ function parseJsonpOrJson(text) {
 function fetchViaCorsProxy(url) {
   var encoded = encodeURIComponent(url);
   var proxyUrl = 'https://api.allorigins.win/raw?url=' + encoded;
-  return fetch(proxyUrl, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (text) {
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function () { controller.abort(); }, 10000);
+  return fetch(proxyUrl, { cache: 'no-store', signal: controller.signal }).then(function (r) { return r.text(); }).then(function (text) {
     var trimmed = (text || '').trim();
     if ((trimmed.toLowerCase().indexOf('<!doctype') === 0) || (trimmed.indexOf('<') === 0)) throw new Error('Proxy returned HTML');
     return parseJsonpOrJson(trimmed);
-  });
+  }).finally(function () { clearTimeout(timeoutId); });
 }
 
 async function fetchOnlineLeaderboard() {
@@ -497,7 +499,7 @@ async function renderOnlineRecords(container) {
     item.className = 'record-item online-record-item';
     item.innerHTML =
       '<div class="record-info">' +
-        '<div class="record-val">' + escapeHtml(nick) + ' · ' + sets + ' Sets ' + (isFin ? '✓' : '') + '</div>' +
+        '<div class="record-val">' + escapeHtml(nick) + ' · ' + escapeHtml(String(sets)) + ' Sets ' + (isFin ? '✓' : '') + '</div>' +
         (dateStr ? '<div class="text-[10px] uppercase opacity-70">' + escapeHtml(dateStr) + '</div>' : '') +
       '</div>' +
       '<div class="record-info text-right flex-grow flex justify-end items-center mr-2">' +
@@ -571,11 +573,6 @@ async function showOnlineRecordDetails(rec) {
   if (typeof syncSubmitOnlineButtonState === 'function') syncSubmitOnlineButtonState();
 }
 
-function escapeHtml(s) {
-  const div = document.createElement('div');
-  div.textContent = s;
-  return div.innerHTML;
-}
 
 function openNicknamePrompt() {
   const current = ensureOnlineNickname();

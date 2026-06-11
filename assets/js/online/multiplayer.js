@@ -230,6 +230,32 @@ function multiplayerHandlePeerDisconnect() {
   if (wasConnected && typeof showToast === 'function') showToast('Opponent left. Switched to Normal mode and restarted game');
 }
 
+function multiplayerHandlePeerChannelClosed(peerNick) {
+  if (MULTIPLAYER_STATE.role !== 'host') return;
+  const key = String(peerNick || '').trim();
+  const peers = MULTIPLAYER_STATE.peerConnections || {};
+  const entry = peers[key];
+  if (!entry) return;
+  if (entry.pc) {
+    try { entry.pc.close(); } catch (_) {}
+  }
+  if (entry.iceFlushTimer) clearTimeout(entry.iceFlushTimer);
+  delete peers[key];
+  MULTIPLAYER_STATE.remoteNicks = (MULTIPLAYER_STATE.remoteNicks || []).filter(n => n !== key);
+  MULTIPLAYER_STATE.remoteNick = MULTIPLAYER_STATE.remoteNicks[0] || '';
+  if (MULTIPLAYER_STATE.remoteReadyByNick) delete MULTIPLAYER_STATE.remoteReadyByNick[key];
+
+  if (multiplayerGetConnectedPeerCount() === 0) {
+    multiplayerHandlePeerDisconnect();
+    return;
+  }
+
+  if (typeof showToast === 'function') showToast(key + ' left the game');
+  multiplayerRenderHud();
+  multiplayerSyncActionButtons();
+  if (typeof multiplayerSyncModal === 'function') multiplayerSyncModal();
+}
+
 function multiplayerHandleModeSwitchAway() {
   multiplayerTeardownSession({ syncActionButtons: true });
 }

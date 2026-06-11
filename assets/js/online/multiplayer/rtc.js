@@ -217,7 +217,13 @@ function multiplayerSetupChannel(channel, peerNick) {
     multiplayerHandleMessage(msg);
   };
 
-  channel.onclose = () => multiplayerHandlePeerDisconnect();
+  channel.onclose = () => {
+    if (MULTIPLAYER_STATE.role === 'host' && peerNick) {
+      multiplayerHandlePeerChannelClosed(peerNick);
+    } else {
+      multiplayerHandlePeerDisconnect();
+    }
+  };
   channel.onerror = (err) => console.error('Data channel error:', err);
 }
 
