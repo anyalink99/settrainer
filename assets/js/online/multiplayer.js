@@ -10,6 +10,7 @@ const MULTIPLAYER_TRYSTERO_URL = 'https://esm.sh/trystero@0.25.2/nostr';
 const MULTIPLAYER_APP_ID = 'set-pro-trainer-v2';
 const MULTIPLAYER_MAX_PLAYERS = 3;
 const MULTIPLAYER_ROOM_CODE_LENGTH = 8;
+const MULTIPLAYER_ROOM_CODE_MAX_LENGTH = 16;
 const MULTIPLAYER_ROOM_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
 const MULTIPLAYER_STATE = {
@@ -107,7 +108,7 @@ function multiplayerNormalizeRoomCode(value) {
   return String(value || '')
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '')
-    .slice(0, MULTIPLAYER_ROOM_CODE_LENGTH);
+    .slice(0, MULTIPLAYER_ROOM_CODE_MAX_LENGTH);
 }
 
 function multiplayerResetConnectionState() {
@@ -408,7 +409,7 @@ function multiplayerHandlePeerLeave(peerId) {
 
 async function multiplayerConnectRoom(role, roomCode) {
   const code = multiplayerNormalizeRoomCode(roomCode);
-  if (!code || code.length < 4 || MULTIPLAYER_STATE.role) return;
+  if (!code || MULTIPLAYER_STATE.role) return;
 
   const connectToken = MULTIPLAYER_STATE.connectToken + 1;
   MULTIPLAYER_STATE.connectToken = connectToken;
@@ -493,8 +494,9 @@ function multiplayerHostLobby() {
     return;
   }
 
-  const code = multiplayerGenerateRoomCode();
   const input = document.getElementById('multiplayer-room-code');
+  const requestedCode = multiplayerNormalizeRoomCode(input ? input.value : '');
+  const code = requestedCode || multiplayerGenerateRoomCode();
   if (input) input.value = code;
   multiplayerConnectRoom('host', code);
 }
@@ -507,7 +509,7 @@ function multiplayerJoinLobby() {
   const input = document.getElementById('multiplayer-room-code');
   const code = multiplayerNormalizeRoomCode(input ? input.value : '');
   if (input) input.value = code;
-  if (code.length < 4) {
+  if (!code) {
     multiplayerSetStatus('Enter a room code');
     if (typeof showToast === 'function') showToast('Enter a room code');
     return;

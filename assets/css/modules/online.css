@@ -81,6 +81,11 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
+
+.multiplayer-room-actions .btn-action {
+  width: 100%;
+  min-width: 0;
+}
 .mp-result-winner {
   font-size: 14px;
   font-weight: 800;
