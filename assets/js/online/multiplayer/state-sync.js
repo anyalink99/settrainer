@@ -1,12 +1,6 @@
 /** Auto-split from multiplayer.js */
 
 function multiplayerHandleMessage(msg) {
-  if (msg.type === 'hello') {
-    if (msg.nick && !MULTIPLAYER_STATE.remoteNicks.includes(String(msg.nick))) MULTIPLAYER_STATE.remoteNicks.push(String(msg.nick));
-    if (msg.nick) MULTIPLAYER_STATE.remoteNick = String(msg.nick);
-    multiplayerRenderHud();
-    return;
-  }
   if (msg.type === 'state') {
     multiplayerApplyState(msg.state, msg.reason);
     return;
@@ -58,6 +52,7 @@ function multiplayerBuildState() {
     board: board.map(cardToCode),
     deck: deck.map(cardToCode),
     scores: { ...MULTIPLAYER_STATE.scores },
+    playerNames: { ...MULTIPLAYER_STATE.playerNames },
     timestampsByNick: JSON.parse(JSON.stringify(MULTIPLAYER_STATE.timestampsByNick || {})),
     elapsedMs: Date.now() - startTime,
     isGameOver: !!isGameOver
@@ -91,6 +86,7 @@ async function multiplayerApplyState(state, reason) {
       closeMultiplayerModal();
       closeSettingsPanel();
       isGameOver = false;
+      MULTIPLAYER_STATE.matchActive = true;
       MULTIPLAYER_STATE.preferRemote = true;
       if (multiplayerIsClient()) {
         multiplayerSetStatus('Match started');
@@ -162,6 +158,9 @@ async function multiplayerApplyState(state, reason) {
     }
 
     MULTIPLAYER_STATE.scores = state.scores || {};
+    if (state.playerNames && typeof state.playerNames === 'object') {
+      MULTIPLAYER_STATE.playerNames = { ...MULTIPLAYER_STATE.playerNames, ...state.playerNames };
+    }
     collectedSets = MULTIPLAYER_STATE.scores[MULTIPLAYER_STATE.localNick] || 0;
     const tsByNick = state.timestampsByNick || {};
     setTimestamps = tsByNick[MULTIPLAYER_STATE.localNick] ? [...tsByNick[MULTIPLAYER_STATE.localNick]] : [];
@@ -255,7 +254,7 @@ async function multiplayerHandleHostClaim(msg) {
   selected.forEach(i => boardEl?.children[i]?.querySelector('.card')?.classList.remove('selected'));
   selected = [];
   const possibleAtStart = analyzePossibleSets().total;
-  const nick = String((msg && msg.nick) || (msg && msg.__from) || MULTIPLAYER_STATE.remoteNick || 'Guest');
+  const nick = String((msg && msg.__from) || (msg && msg.nick) || MULTIPLAYER_STATE.remoteNick || 'Guest');
   multiplayerAwardSet(nick, possibleAtStart);
   await applySetToBoard(sIdx);
   multiplayerBroadcastState('set');
@@ -336,7 +335,7 @@ function multiplayerHandleHostShuffleRequest(msg) {
   }
 
   const possibleCount = analyzePossibleSets().total;
-  const nick = String((msg && msg.nick) || MULTIPLAYER_STATE.remoteNick || 'Guest');
+  const nick = String((msg && msg.__from) || (msg && msg.nick) || MULTIPLAYER_STATE.remoteNick || 'Guest');
 
   if (possibleCount > 0) {
     badShuffles++;
@@ -394,11 +393,14 @@ function multiplayerBuildSummary() {
       winner = 'Tie';
     }
   });
-  return { winner, scores };
+  return { winner, scores, playerNames: { ...MULTIPLAYER_STATE.playerNames } };
 }
 
 function multiplayerShowResult(summary) {
   if (!summary) summary = multiplayerBuildSummary();
+  if (summary.playerNames && typeof summary.playerNames === 'object') {
+    MULTIPLAYER_STATE.playerNames = { ...MULTIPLAYER_STATE.playerNames, ...summary.playerNames };
+  }
   const winnerEl = document.getElementById('multiplayer-result-winner');
   if (winnerEl) {
     const label = summary.winner === 'Tie' ? 'Tie' : (multiplayerDisplayNick(summary.winner) || '—');
@@ -436,6 +438,7 @@ function multiplayerRequestRematch() {
 
 function multiplayerStartMatch() {
   if (!multiplayerIsHost()) return;
+  MULTIPLAYER_STATE.matchActive = true;
   MULTIPLAYER_STATE.preferRemote = false;
   MULTIPLAYER_STATE.startEpoch = Date.now();
   const hostNick = MULTIPLAYER_STATE.localNick || multiplayerGetWireNick();

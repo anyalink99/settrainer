@@ -1,62 +1,32 @@
 /**
- * =============================================================================
- * Multiplayer Lobby, Connection, and Match Sync Logic
- * =============================================================================
+ * Multiplayer transport and session lifecycle.
  *
- * This module handles the full multiplayer lifecycle for Set Trainer:
- *
- * - Lobby discovery and joining:
- *   - Hosts create lobbies through the backend API.
- *   - Clients fetch recent lobbies and join by selecting one from the list.
- *   - The lobby list is refreshed on a fixed interval while the multiplayer
- *     modal is open.
- *
- * - Connection setup:
- *   - Peers exchange readiness and signaling payloads through the lobby API.
- *   - WebRTC data channels are used for real-time gameplay communication
- *     (STUN + TURN, see MULTIPLAYER_ICE_SERVERS in constants.js).
- *   - Players are addressed by a "wire nick" (display name + random session
- *     tag) so identical nicknames don't collide; the tag is stripped in UI.
- *   - Handshake timeouts, a connection-state watchdog, ICE batching, and
- *     adaptive polling make setup and disconnects resilient: lobby polling
- *     runs fast only while a handshake is in flight, slows for an idle host,
- *     and stops entirely for a connected client.
- *
- * - Match authority and state replication:
- *   - Host is authoritative for deck/board transitions and scoring outcomes.
- *   - Host broadcasts state snapshots for start, shuffles, claims, and finish.
- *   - Client applies host snapshots and uses remote-authoritative rendering.
- *
- * - UX and teardown behavior:
- *   - Multiplayer and settings overlays are closed automatically when a match
- *     starts.
- *   - When a single peer leaves, only that peer is cleaned up; the session is
- *     fully reset (back to Normal mode, with a toast) when the last peer or
- *     the host disconnects.
- *
- * Dependencies:
- * - Global game state/UI helpers from game-logic.js, settings.js, modal-management.js.
- * - Lobby backend endpoint configured via ONLINE_LOBBY_URL / ONLINE_LEADERBOARD_URL.
- * - Browser WebRTC APIs (RTCPeerConnection, RTCSessionDescription, RTCIceCandidate).
+ * Trystero handles peer discovery, WebRTC signaling, data channels, retries,
+ * and serialization. The host remains authoritative for all game state; the
+ * match protocol itself lives in multiplayer/state-sync.js.
  */
+
+const MULTIPLAYER_TRYSTERO_URL = 'https://esm.sh/trystero@0.25.2/nostr';
+const MULTIPLAYER_APP_ID = 'set-pro-trainer-v2';
+const MULTIPLAYER_MAX_PLAYERS = 3;
+const MULTIPLAYER_ROOM_CODE_LENGTH = 8;
+const MULTIPLAYER_ROOM_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
 const MULTIPLAYER_STATE = {
   role: null,
   lobbyId: '',
-  pc: null,
-  channel: null,
-  pollTimer: null,
-  pollIntervalMs: 0,
-  pollInFlight: false,
-  processedSignals: new Set(),
+  room: null,
+  messageAction: null,
+  connectToken: 0,
   isConnected: false,
+  isConnecting: false,
   statusText: 'Not connected',
   statusBaseText: 'Not connected',
   localNick: '',
+  localDisplayNick: '',
   remoteNick: '',
   remoteNicks: [],
-  remoteReadyByNick: {},
-  peerConnections: {},
+  playerNames: {},
   scores: {},
   timestampsByNick: {},
   lastSetTimeByNick: {},
@@ -68,60 +38,20 @@ const MULTIPLAYER_STATE = {
   prevGameMode: null,
   lastStateVersion: 0,
   isApplyingState: false,
-  isReady: false,
-  remoteReady: false,
-  offerSent: false,
-  answerSent: false,
-  connectionAttempts: 0,
-  connectionState: 'idle',
-  connectionStartTime: 0,
-  connectionTimeout: null,
-  pendingIceCandidates: [],
-  outboundIceCandidates: [],
-  iceFlushTimer: null,
-  waitingForAnswerSince: 0,
-  extendedAnswerWait: false,
-  lastRemoteOfferSdp: '',
-  isConnecting: false,
-  availableLobbies: [],
-  isLobbyListLoading: false,
-  lobbyListLastSignature: '',
-  hasLoadedLobbyListOnce: false,
-  lobbyListTimer: null,
   rematchPrepared: false,
-  selectedLobbyId: '',
-  selectedLobbyHostNick: ''
+  matchActive: false
 };
 
-const MULTIPLAYER_LOBBY_MAX_AGE_MS = 3 * 60 * 1000;
-const MULTIPLAYER_LOBBY_ALWAYS_INCLUDE_RECENT = 2;
-
-// Players are addressed by "wire nick": display nickname plus a random
-// session tag (e.g. "Alex#k3f9"). Signals routing, peer entries and scores
-// key off the wire nick so two players with the same display name don't
-// collide; the tag is stripped everywhere a name is shown. The tag lives in
-// sessionStorage so a page refresh rejoins under the same identity instead
-// of leaving a ghost player in the lobby.
-const MULTIPLAYER_SESSION_TAG = (() => {
-  try {
-    const existing = sessionStorage.getItem('mpSessionTag');
-    if (existing) return existing;
-    const tag = Math.random().toString(36).slice(2, 6);
-    sessionStorage.setItem('mpSessionTag', tag);
-    return tag;
-  } catch (_) {
-    return Math.random().toString(36).slice(2, 6);
-  }
-})();
-
 function multiplayerGetWireNick() {
-  return multiplayerGetNickname() + '#' + MULTIPLAYER_SESSION_TAG;
+  return MULTIPLAYER_STATE.localNick || multiplayerGetNickname();
 }
 
-function multiplayerDisplayNick(nick) {
-  return String(nick || '').replace(/#[a-z0-9]{4}$/i, '');
+function multiplayerDisplayNick(playerId) {
+  const id = String(playerId || '');
+  if (MULTIPLAYER_STATE.playerNames[id]) return MULTIPLAYER_STATE.playerNames[id];
+  if (id && id === MULTIPLAYER_STATE.localNick) return MULTIPLAYER_STATE.localDisplayNick || multiplayerGetNickname();
+  return id || 'Player';
 }
-
 
 function multiplayerIsHost() {
   return MULTIPLAYER_STATE.role === 'host' && MULTIPLAYER_STATE.isConnected;
@@ -135,27 +65,15 @@ function multiplayerShouldUseRemoteState() {
   return isMultiplayerModeActive() && (MULTIPLAYER_STATE.role === 'client' || MULTIPLAYER_STATE.preferRemote);
 }
 
-
 function multiplayerGetConnectedPeerCount() {
-  const peers = MULTIPLAYER_STATE.peerConnections || {};
-  return Object.keys(peers).reduce((acc, nick) => {
-    const channel = peers[nick] && peers[nick].channel;
-    return acc + ((channel && channel.readyState === 'open') ? 1 : 0);
-  }, 0);
+  if (MULTIPLAYER_STATE.role === 'host') return MULTIPLAYER_STATE.remoteNicks.length;
+  return MULTIPLAYER_STATE.isConnected ? 1 : 0;
 }
 
 function multiplayerGetNickname() {
   if (typeof ensureOnlineNickname === 'function') return ensureOnlineNickname();
   const raw = (config && config.onlineNickname) ? String(config.onlineNickname) : '';
   return raw.trim() || 'Player';
-}
-
-function multiplayerGetBaseUrl() {
-  if (typeof getOnlineApiUrl === 'function') return getOnlineApiUrl('lobby');
-  const lobbyUrl = normalizeAppsScriptExecUrl(ONLINE_LOBBY_URL);
-  if (lobbyUrl) return lobbyUrl;
-  if (typeof getLeaderboardBaseUrl === 'function') return getLeaderboardBaseUrl();
-  return normalizeAppsScriptExecUrl(ONLINE_LEADERBOARD_URL);
 }
 
 function multiplayerSetStatus(text) {
@@ -179,27 +97,55 @@ function multiplayerSetStatus(text) {
   if (typeof multiplayerRenderHud === 'function') multiplayerRenderHud();
 }
 
+function multiplayerGenerateRoomCode() {
+  const bytes = new Uint8Array(MULTIPLAYER_ROOM_CODE_LENGTH);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, value => MULTIPLAYER_ROOM_CODE_ALPHABET[value % MULTIPLAYER_ROOM_CODE_ALPHABET.length]).join('');
+}
+
+function multiplayerNormalizeRoomCode(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, MULTIPLAYER_ROOM_CODE_LENGTH);
+}
+
+function multiplayerResetConnectionState() {
+  MULTIPLAYER_STATE.connectToken += 1;
+  const room = MULTIPLAYER_STATE.room;
+  MULTIPLAYER_STATE.room = null;
+  MULTIPLAYER_STATE.messageAction = null;
+  if (room && typeof room.leave === 'function') {
+    try {
+      const leaveResult = room.leave();
+      if (leaveResult && typeof leaveResult.catch === 'function') leaveResult.catch(() => {});
+    } catch (_) {}
+  }
+}
+
 function multiplayerResetSessionState() {
   Object.assign(MULTIPLAYER_STATE, {
     role: null,
     lobbyId: '',
+    isConnected: false,
+    isConnecting: false,
+    localNick: '',
+    localDisplayNick: '',
     remoteNick: '',
     remoteNicks: [],
-    remoteReadyByNick: {},
-    peerConnections: {},
+    playerNames: {},
     scores: {},
     timestampsByNick: {},
     lastSetTimeByNick: {},
-    isConnected: false,
+    pendingClaim: false,
+    pendingShuffle: false,
+    pendingRemoteState: null,
     preferRemote: false,
-    availableLobbies: [],
-    isLobbyListLoading: false,
-    lobbyListLastSignature: '',
-    hasLoadedLobbyListOnce: false,
-    rematchPrepared: false,
     prevGameMode: null,
-    selectedLobbyId: '',
-    selectedLobbyHostNick: ''
+    lastStateVersion: 0,
+    isApplyingState: false,
+    rematchPrepared: false,
+    matchActive: false
   });
 }
 
@@ -245,14 +191,13 @@ function multiplayerTeardownSession(options = {}) {
     closeOverlays = true
   } = options;
 
-  multiplayerStopPolling();
-  multiplayerStopLobbyListPolling();
   multiplayerResetConnectionState();
   multiplayerResetSessionState();
   multiplayerSetStatus('Not connected');
-  multiplayerRenderHud();
+  if (typeof multiplayerRenderHud === 'function') multiplayerRenderHud();
+  if (typeof multiplayerSyncModal === 'function') multiplayerSyncModal();
 
-  if (syncActionButtons) multiplayerSyncActionButtons();
+  if (syncActionButtons && typeof multiplayerSyncActionButtons === 'function') multiplayerSyncActionButtons();
   if (closeOverlays) multiplayerCloseOverlays();
   if (switchToNormalMode) multiplayerReinitializeGameToNormalMode();
 }
@@ -261,59 +206,313 @@ function multiplayerHandlePeerDisconnect() {
   if (!MULTIPLAYER_STATE.role) return;
   const wasConnected = MULTIPLAYER_STATE.isConnected;
   multiplayerTeardownSession({ switchToNormalMode: true });
-  if (wasConnected && typeof showToast === 'function') showToast('Opponent left. Switched to Normal mode and restarted game');
+  if (wasConnected && typeof showToast === 'function') {
+    showToast('Host left. Switched to Normal mode and restarted game');
+  }
 }
 
-function multiplayerHandleClientConnectionFailure() {
+function multiplayerSendRaw(payload, target) {
+  const action = MULTIPLAYER_STATE.messageAction;
+  if (!action || !target || (Array.isArray(target) && target.length === 0)) return;
+  try {
+    const result = action.send(payload, { target });
+    if (result && typeof result.catch === 'function') {
+      result.catch(err => debugLog('Multiplayer send failed:', err && err.message ? err.message : err));
+    }
+  } catch (err) {
+    debugLog('Multiplayer send failed:', err);
+  }
+}
+
+function multiplayerSend(payload) {
+  if (MULTIPLAYER_STATE.role === 'host') {
+    multiplayerSendRaw(payload, [...MULTIPLAYER_STATE.remoteNicks]);
+    return;
+  }
+  if (MULTIPLAYER_STATE.role === 'client') {
+    multiplayerSendRaw(payload, MULTIPLAYER_STATE.remoteNick);
+  }
+}
+
+function multiplayerSendTo(playerId, payload) {
+  const target = String(playerId || '');
+  if (!target) return;
+  if (MULTIPLAYER_STATE.role === 'host' && !MULTIPLAYER_STATE.remoteNicks.includes(target)) return;
+  multiplayerSendRaw(payload, target);
+}
+
+function multiplayerRosterPayload() {
+  return {
+    type: 'roster',
+    players: { ...MULTIPLAYER_STATE.playerNames }
+  };
+}
+
+function multiplayerApplyRoster(players) {
+  if (!players || typeof players !== 'object') return;
+  const localName = MULTIPLAYER_STATE.localDisplayNick || multiplayerGetNickname();
+  MULTIPLAYER_STATE.playerNames = {
+    ...players,
+    [MULTIPLAYER_STATE.localNick]: localName
+  };
+  if (MULTIPLAYER_STATE.role === 'client') {
+    MULTIPLAYER_STATE.remoteNicks = Object.keys(MULTIPLAYER_STATE.playerNames)
+      .filter(playerId => playerId !== MULTIPLAYER_STATE.localNick);
+  }
+  if (typeof multiplayerRenderHud === 'function') multiplayerRenderHud();
+  if (typeof multiplayerSyncModal === 'function') multiplayerSyncModal();
+}
+
+function multiplayerSendPresence(peerId) {
+  multiplayerSendRaw({
+    type: 'presence',
+    role: MULTIPLAYER_STATE.role,
+    nick: MULTIPLAYER_STATE.localDisplayNick
+  }, peerId);
+}
+
+function multiplayerHandlePresence(message, peerId) {
+  const displayNick = String(message.nick || 'Player').trim().slice(0, 32) || 'Player';
+
+  if (MULTIPLAYER_STATE.role === 'host') {
+    if (message.role !== 'client') {
+      multiplayerSendRaw({ type: 'rejected', reason: 'Room already has a host' }, peerId);
+      return;
+    }
+
+    const alreadyAccepted = MULTIPLAYER_STATE.remoteNicks.includes(peerId);
+    if (!alreadyAccepted && MULTIPLAYER_STATE.matchActive) {
+      multiplayerSendRaw({ type: 'rejected', reason: 'Match already started' }, peerId);
+      return;
+    }
+    if (!alreadyAccepted && MULTIPLAYER_STATE.remoteNicks.length >= MULTIPLAYER_MAX_PLAYERS - 1) {
+      multiplayerSendRaw({ type: 'rejected', reason: 'Room is full' }, peerId);
+      return;
+    }
+
+    if (!alreadyAccepted) MULTIPLAYER_STATE.remoteNicks.push(peerId);
+    MULTIPLAYER_STATE.playerNames[peerId] = displayNick;
+    MULTIPLAYER_STATE.isConnected = MULTIPLAYER_STATE.remoteNicks.length > 0;
+    multiplayerSendRaw({
+      type: 'welcome',
+      hostId: MULTIPLAYER_STATE.localNick,
+      players: { ...MULTIPLAYER_STATE.playerNames }
+    }, peerId);
+    multiplayerSend(multiplayerRosterPayload());
+    multiplayerSetStatus('Connected');
+    multiplayerRenderHud();
+    multiplayerSyncActionButtons();
+    multiplayerSyncModal();
+    return;
+  }
+
+  if (MULTIPLAYER_STATE.role === 'client') {
+    MULTIPLAYER_STATE.playerNames[peerId] = displayNick;
+    if (message.role === 'host' && !MULTIPLAYER_STATE.remoteNick) {
+      MULTIPLAYER_STATE.remoteNick = peerId;
+      multiplayerSetStatus('Connecting...');
+    }
+  }
+}
+
+function multiplayerHandleWelcome(message, peerId) {
   if (MULTIPLAYER_STATE.role !== 'client') return;
-  // An established session that died is a disconnect; a handshake that never
-  // completed gets a couple of silent retries (signals replay from the lobby
-  // log after the reset, so the handshake restarts on its own).
-  if (MULTIPLAYER_STATE.isConnected) {
-    multiplayerHandlePeerDisconnect();
-    return;
-  }
-  if ((MULTIPLAYER_STATE.connectionAttempts || 0) < MULTIPLAYER_MAX_CONNECTION_RETRIES) {
-    MULTIPLAYER_STATE.connectionAttempts = (MULTIPLAYER_STATE.connectionAttempts || 0) + 1;
-    debugLog('Retrying connection, attempt', MULTIPLAYER_STATE.connectionAttempts);
-    multiplayerRetryConnection();
-    return;
-  }
-  multiplayerSetStatus('Connection failed');
-  if (typeof showToast === 'function') showToast('Could not connect to host');
-}
+  if (message.hostId && message.hostId !== peerId) return;
+  if (MULTIPLAYER_STATE.remoteNick && MULTIPLAYER_STATE.remoteNick !== peerId) return;
 
-function multiplayerCleanupPeerEntry(peerNick) {
-  const key = String(peerNick || '').trim();
-  const peers = MULTIPLAYER_STATE.peerConnections || {};
-  const entry = peers[key];
-  if (!entry) return false;
-  if (entry.pc) {
-    try { entry.pc.close(); } catch (_) {}
-  }
-  if (entry.iceFlushTimer) clearTimeout(entry.iceFlushTimer);
-  if (entry.connectTimer) clearTimeout(entry.connectTimer);
-  delete peers[key];
-  return true;
-}
-
-function multiplayerHandlePeerChannelClosed(peerNick) {
-  if (MULTIPLAYER_STATE.role !== 'host') return;
-  const key = String(peerNick || '').trim();
-  if (!multiplayerCleanupPeerEntry(key)) return;
-  MULTIPLAYER_STATE.remoteNicks = (MULTIPLAYER_STATE.remoteNicks || []).filter(n => n !== key);
-  MULTIPLAYER_STATE.remoteNick = MULTIPLAYER_STATE.remoteNicks[0] || '';
-  if (MULTIPLAYER_STATE.remoteReadyByNick) delete MULTIPLAYER_STATE.remoteReadyByNick[key];
-
-  if (multiplayerGetConnectedPeerCount() === 0) {
-    multiplayerHandlePeerDisconnect();
-    return;
-  }
-
-  if (typeof showToast === 'function') showToast(multiplayerDisplayNick(key) + ' left the game');
+  MULTIPLAYER_STATE.remoteNick = peerId;
+  MULTIPLAYER_STATE.isConnected = true;
+  multiplayerApplyRoster(message.players);
+  multiplayerSetStatus('Connected');
   multiplayerRenderHud();
   multiplayerSyncActionButtons();
-  if (typeof multiplayerSyncModal === 'function') multiplayerSyncModal();
+  multiplayerSyncModal();
+}
+
+function multiplayerHandleRejected(message, peerId) {
+  if (MULTIPLAYER_STATE.role !== 'client') return;
+  if (MULTIPLAYER_STATE.remoteNick && MULTIPLAYER_STATE.remoteNick !== peerId) return;
+  const reason = String(message.reason || 'Could not join room');
+  multiplayerTeardownSession({ closeOverlays: false, syncActionButtons: true });
+  multiplayerSetStatus(reason);
+  if (typeof showToast === 'function') showToast(reason);
+}
+
+function multiplayerReceiveMessage(message, peerId) {
+  if (!message || typeof message !== 'object' || !message.type) return;
+
+  if (message.type === 'presence') {
+    multiplayerHandlePresence(message, peerId);
+    return;
+  }
+  if (message.type === 'welcome') {
+    multiplayerHandleWelcome(message, peerId);
+    return;
+  }
+  if (message.type === 'rejected') {
+    multiplayerHandleRejected(message, peerId);
+    return;
+  }
+  if (message.type === 'roster') {
+    if (MULTIPLAYER_STATE.role === 'client' && peerId === MULTIPLAYER_STATE.remoteNick) {
+      multiplayerApplyRoster(message.players);
+    }
+    return;
+  }
+
+  if (MULTIPLAYER_STATE.role === 'host') {
+    if (!MULTIPLAYER_STATE.remoteNicks.includes(peerId)) return;
+  } else if (MULTIPLAYER_STATE.role === 'client') {
+    if (!MULTIPLAYER_STATE.remoteNick || peerId !== MULTIPLAYER_STATE.remoteNick) return;
+  } else {
+    return;
+  }
+
+  const allowedTypes = MULTIPLAYER_STATE.role === 'host'
+    ? ['claim', 'shuffle_request']
+    : ['state', 'claim_result', 'shuffle_result', 'finish'];
+  if (!allowedTypes.includes(message.type)) return;
+
+  const routedMessage = { ...message, __from: peerId };
+  if (MULTIPLAYER_STATE.role === 'host') routedMessage.nick = peerId;
+  multiplayerHandleMessage(routedMessage);
+}
+
+function multiplayerHandlePeerLeave(peerId) {
+  if (MULTIPLAYER_STATE.role === 'client') {
+    if (peerId === MULTIPLAYER_STATE.remoteNick) multiplayerHandlePeerDisconnect();
+    return;
+  }
+  if (MULTIPLAYER_STATE.role !== 'host') return;
+
+  const index = MULTIPLAYER_STATE.remoteNicks.indexOf(peerId);
+  if (index < 0) return;
+  const displayNick = multiplayerDisplayNick(peerId);
+  MULTIPLAYER_STATE.remoteNicks.splice(index, 1);
+  if (!MULTIPLAYER_STATE.matchActive) delete MULTIPLAYER_STATE.playerNames[peerId];
+  MULTIPLAYER_STATE.isConnected = MULTIPLAYER_STATE.remoteNicks.length > 0;
+
+  if (MULTIPLAYER_STATE.matchActive && !MULTIPLAYER_STATE.isConnected) {
+    multiplayerTeardownSession({ switchToNormalMode: true });
+    if (typeof showToast === 'function') showToast('All opponents left. Switched to Normal mode');
+    return;
+  }
+
+  multiplayerSend(multiplayerRosterPayload());
+  multiplayerSetStatus(MULTIPLAYER_STATE.isConnected ? 'Connected' : 'Waiting for players...');
+  if (typeof showToast === 'function') showToast(displayNick + ' left the game');
+  multiplayerRenderHud();
+  multiplayerSyncActionButtons();
+  multiplayerSyncModal();
+}
+
+async function multiplayerConnectRoom(role, roomCode) {
+  const code = multiplayerNormalizeRoomCode(roomCode);
+  if (!code || code.length < 4 || MULTIPLAYER_STATE.role) return;
+
+  const connectToken = MULTIPLAYER_STATE.connectToken + 1;
+  MULTIPLAYER_STATE.connectToken = connectToken;
+  MULTIPLAYER_STATE.role = role;
+  MULTIPLAYER_STATE.lobbyId = code;
+  MULTIPLAYER_STATE.localDisplayNick = multiplayerGetNickname();
+  MULTIPLAYER_STATE.isConnecting = true;
+  multiplayerSetStatus('Loading network...');
+  multiplayerSyncModal();
+
+  let trystero;
+  try {
+    trystero = await import(MULTIPLAYER_TRYSTERO_URL);
+  } catch (err) {
+    if (MULTIPLAYER_STATE.connectToken !== connectToken) return;
+    console.error('Failed to load Trystero:', err);
+    multiplayerTeardownSession({ closeOverlays: false, syncActionButtons: true });
+    multiplayerSetStatus('Could not load network library');
+    return;
+  }
+
+  if (MULTIPLAYER_STATE.connectToken !== connectToken || MULTIPLAYER_STATE.role !== role) return;
+
+  try {
+    const room = trystero.joinRoom({
+      appId: MULTIPLAYER_APP_ID,
+      turnConfig: MULTIPLAYER_TURN_SERVERS
+    }, code, {
+      onJoinError: ({ error }) => {
+        if (MULTIPLAYER_STATE.room !== room || MULTIPLAYER_STATE.isConnected) return;
+        console.warn('Trystero peer connection failed:', error);
+        multiplayerSetStatus('Could not connect to peer');
+      }
+    });
+    const action = room.makeAction('msg');
+
+    MULTIPLAYER_STATE.room = room;
+    MULTIPLAYER_STATE.messageAction = action;
+    MULTIPLAYER_STATE.localNick = trystero.selfId;
+    MULTIPLAYER_STATE.playerNames = {
+      [trystero.selfId]: MULTIPLAYER_STATE.localDisplayNick
+    };
+    MULTIPLAYER_STATE.isConnecting = false;
+
+    action.onMessage = (message, meta) => {
+      if (MULTIPLAYER_STATE.room !== room) return;
+      multiplayerReceiveMessage(message, meta && meta.peerId);
+    };
+    room.onPeerJoin = peerId => {
+      if (MULTIPLAYER_STATE.room !== room) return;
+      multiplayerSendPresence(peerId);
+    };
+    room.onPeerLeave = peerId => {
+      if (MULTIPLAYER_STATE.room !== room) return;
+      multiplayerHandlePeerLeave(peerId);
+    };
+
+    multiplayerSetStatus(role === 'host' ? 'Waiting for players...' : 'Looking for host...');
+    multiplayerSyncModal();
+  } catch (err) {
+    if (MULTIPLAYER_STATE.connectToken !== connectToken) return;
+    console.error('Failed to join multiplayer room:', err);
+    multiplayerTeardownSession({ closeOverlays: false, syncActionButtons: true });
+    multiplayerSetStatus('Could not join room');
+  }
+}
+
+function multiplayerHostLobby() {
+  if (MULTIPLAYER_STATE.role === 'host') {
+    if (multiplayerGetConnectedPeerCount() < 1) {
+      multiplayerSetStatus('Waiting for players...');
+      if (typeof showToast === 'function') showToast('Wait until at least one player connects');
+      return;
+    }
+    multiplayerStartMatch();
+    closeMultiplayerModal();
+    closeSettingsPanel();
+    return;
+  }
+  if (MULTIPLAYER_STATE.role) {
+    if (typeof showToast === 'function') showToast('Leave the current room first');
+    return;
+  }
+
+  const code = multiplayerGenerateRoomCode();
+  const input = document.getElementById('multiplayer-room-code');
+  if (input) input.value = code;
+  multiplayerConnectRoom('host', code);
+}
+
+function multiplayerJoinLobby() {
+  if (MULTIPLAYER_STATE.role) {
+    if (typeof showToast === 'function') showToast('Leave the current room first');
+    return;
+  }
+  const input = document.getElementById('multiplayer-room-code');
+  const code = multiplayerNormalizeRoomCode(input ? input.value : '');
+  if (input) input.value = code;
+  if (code.length < 4) {
+    multiplayerSetStatus('Enter a room code');
+    if (typeof showToast === 'function') showToast('Enter a room code');
+    return;
+  }
+  multiplayerConnectRoom('client', code);
 }
 
 function multiplayerHandleModeSwitchAway() {

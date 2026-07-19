@@ -350,15 +350,23 @@
                     <div id="multiplayer-nick" class="text-sm font-bold text-pink-400">Player</div>
                 </div>
                 <div class="settings-row !flex-col !items-stretch !h-auto gap-2">
-                    <span class="text-sm font-bold uppercase">Host a lobby</span>
-                    <div class="flex gap-2 items-center">
+                    <span class="text-sm font-bold uppercase">Room code</span>
+                    <input id="multiplayer-room-code"
+                           class="multiplayer-room-code"
+                           type="text"
+                           maxlength="8"
+                           autocomplete="off"
+                           spellcheck="false"
+                           placeholder="Enter a code"
+                           aria-label="Room code"
+                           oninput="multiplayerNormalizeRoomCodeInput(this)"
+                           onkeydown="multiplayerHandleRoomCodeKeydown(event)">
+                    <div class="multiplayer-room-actions">
                         <button id="multiplayer-host-btn" onpointerdown="multiplayerHostLobby()" class="btn-action btn-action--compact">Host</button>
-                        <div class="text-xs text-gray-400" id="multiplayer-lobby-id"></div>
+                        <button id="multiplayer-join-btn" onpointerdown="multiplayerJoinLobby()" class="btn-action btn-action--compact">Join</button>
+                        <button id="multiplayer-copy-btn" onpointerdown="multiplayerCopyRoomCode()" class="btn-action btn-action--compact btn-action--secondary" disabled>Copy</button>
                     </div>
-                </div>
-                <div class="settings-row !flex-col !items-stretch !h-auto gap-2">
-                    <span class="text-sm font-bold uppercase">Join a lobby</span>
-                    <div id="multiplayer-lobby-list" class="multiplayer-lobby-list" aria-live="polite"></div>
+                    <div class="text-xs text-gray-400">Host a room and share its code. Up to three players can join.</div>
                 </div>
                 <div class="settings-row !flex-col !items-stretch !h-auto gap-2">
                     <span class="text-sm font-bold uppercase">Status</span>
@@ -481,9 +489,6 @@
 <script src="assets/js/game/tps-logic.js"></script>
 <script src="assets/js/online/multiplayer.js"></script>
 <script src="assets/js/online/multiplayer/ui.js"></script>
-<script src="assets/js/online/multiplayer/lobby.js"></script>
-<script src="assets/js/online/multiplayer/signaling.js"></script>
-<script src="assets/js/online/multiplayer/rtc.js"></script>
 <script src="assets/js/online/multiplayer/state-sync.js"></script>
 <script src="assets/js/game/game-logic.js"></script>
 <script src="assets/js/game/training-mode.js"></script>

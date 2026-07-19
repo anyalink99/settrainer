@@ -52,55 +52,34 @@
     color: #ec4899;
 }
 
-.multiplayer-lobby-list {
+.multiplayer-room-code {
   width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 210px;
-  overflow-y: auto;
-  padding-right: 2px;
-}
-
-.multiplayer-lobby-item {
-  width: 100%;
-  background: #3d3442;
   border: 1px solid #5a4d61;
   border-radius: 10px;
-  padding: 10px;
-  text-align: left;
-  color: #e5e7eb;
+  background: #3d3442;
+  color: #f9a8d4;
+  padding: 10px 12px;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-align: center;
+  text-transform: uppercase;
+  outline: none;
 }
 
-.multiplayer-lobby-item:active {
-  transform: scale(0.99);
-}
-
-.multiplayer-lobby-item.active {
+.multiplayer-room-code:focus {
   border-color: #ec4899;
   box-shadow: 0 0 0 2px rgba(236, 72, 153, 0.2);
-  background: linear-gradient(135deg, rgba(167, 74, 124, 0.35), rgba(61, 52, 66, 0.95));
 }
 
-.multiplayer-lobby-item--empty {
-  opacity: 0.7;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 11px;
+.multiplayer-room-code[readonly] {
+  opacity: 0.85;
 }
 
-.multiplayer-lobby-host {
-  font-size: 12px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.multiplayer-lobby-id {
-  margin-top: 4px;
-  font-size: 11px;
-  color: #f9a8d4;
-  opacity: 0.9;
+.multiplayer-room-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 .mp-result-winner {
   font-size: 14px;

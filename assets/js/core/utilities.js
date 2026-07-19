@@ -61,15 +61,9 @@ function normalizeAppsScriptExecUrl(rawUrl) {
 }
 
 function getOnlineApiUrl(preferredEndpoint) {
-  const endpoint = preferredEndpoint === 'lobby' ? 'lobby' : 'leaderboard';
-  const primaryUrl = endpoint === 'lobby' ? ONLINE_LOBBY_URL : ONLINE_LEADERBOARD_URL;
-  const fallbackUrl = endpoint === 'lobby' ? ONLINE_LEADERBOARD_URL : ONLINE_LOBBY_URL;
-
-  const normalizedPrimary = normalizeAppsScriptExecUrl(primaryUrl);
-  if (normalizedPrimary) return normalizedPrimary;
-
-  const normalizedFallback = normalizeAppsScriptExecUrl(fallbackUrl);
-  return normalizedFallback || '';
+  return preferredEndpoint === 'leaderboard'
+    ? normalizeAppsScriptExecUrl(ONLINE_LEADERBOARD_URL)
+    : '';
 }
 
 function shouldEnableDebugLogs() {

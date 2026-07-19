@@ -1,12 +1,11 @@
-/** Multiplayer UI module */
+/** Multiplayer UI helpers. */
 
 function multiplayerGetStatusNickname() {
   if (MULTIPLAYER_STATE.role === 'host') {
-    const remotes = Array.isArray(MULTIPLAYER_STATE.remoteNicks) ? MULTIPLAYER_STATE.remoteNicks.filter(Boolean) : [];
-    return remotes.map(multiplayerDisplayNick).join(', ');
+    return MULTIPLAYER_STATE.remoteNicks.map(multiplayerDisplayNick).join(', ');
   }
-  if (MULTIPLAYER_STATE.role === 'client') {
-    return multiplayerDisplayNick((MULTIPLAYER_STATE.remoteNick || '').trim());
+  if (MULTIPLAYER_STATE.role === 'client' && MULTIPLAYER_STATE.remoteNick) {
+    return multiplayerDisplayNick(MULTIPLAYER_STATE.remoteNick);
   }
   return '';
 }
@@ -27,26 +26,25 @@ function multiplayerRenderHud() {
     statusEl.style.display = shouldHideStatus ? 'none' : '';
   }
 
-  const board = document.getElementById('multiplayer-scoreboard');
-  if (!board) return;
-  board.innerHTML = '';
+  const scoreboard = document.getElementById('multiplayer-scoreboard');
+  if (!scoreboard) return;
+  scoreboard.innerHTML = '';
   const scores = MULTIPLAYER_STATE.scores || {};
   const local = MULTIPLAYER_STATE.localNick;
   const entries = Object.keys(scores);
-  if (entries.length === 0) return;
   entries.sort((a, b) => (a === local ? -1 : b === local ? 1 : 0));
-  entries.forEach(nick => {
+  entries.forEach(playerId => {
     const row = document.createElement('div');
     row.className = 'mp-score-row';
     const name = document.createElement('div');
     name.className = 'mp-score-name';
-    name.textContent = nick === local ? 'You' : multiplayerDisplayNick(nick);
-    const val = document.createElement('div');
-    val.className = 'mp-score-val';
-    val.textContent = String(scores[nick] ?? 0);
+    name.textContent = playerId === local ? 'You' : multiplayerDisplayNick(playerId);
+    const value = document.createElement('div');
+    value.className = 'mp-score-val';
+    value.textContent = String(scores[playerId] ?? 0);
     row.appendChild(name);
-    row.appendChild(val);
-    board.appendChild(row);
+    row.appendChild(value);
+    scoreboard.appendChild(row);
   });
 }
 
@@ -74,22 +72,28 @@ function multiplayerSyncModal() {
   const nickEl = document.getElementById('multiplayer-nick');
   if (nickEl) nickEl.textContent = multiplayerGetNickname();
 
-  const lobbyEl = document.getElementById('multiplayer-lobby-id');
-  if (lobbyEl) {
-    const shouldShowHostLobbyId = MULTIPLAYER_STATE.role === 'host' && MULTIPLAYER_STATE.lobbyId;
-    lobbyEl.textContent = shouldShowHostLobbyId ? ('Lobby: ' + MULTIPLAYER_STATE.lobbyId) : '';
+  const roomInput = document.getElementById('multiplayer-room-code');
+  if (roomInput) {
+    if (MULTIPLAYER_STATE.lobbyId) roomInput.value = MULTIPLAYER_STATE.lobbyId;
+    roomInput.readOnly = !!MULTIPLAYER_STATE.role;
   }
 
   const hostBtn = document.getElementById('multiplayer-host-btn');
   if (hostBtn) {
-    const isHostSession = MULTIPLAYER_STATE.role === 'host' && !!MULTIPLAYER_STATE.lobbyId;
-    const connectedPeers = (typeof multiplayerGetConnectedPeerCount === 'function') ? multiplayerGetConnectedPeerCount() : 0;
+    const isHostSession = MULTIPLAYER_STATE.role === 'host';
     hostBtn.textContent = isHostSession ? 'Start' : 'Host';
-    const canStart = isHostSession && connectedPeers > 0;
-    hostBtn.style.opacity = isHostSession && !canStart ? '0.6' : '';
+    hostBtn.disabled = MULTIPLAYER_STATE.role === 'client' || MULTIPLAYER_STATE.isConnecting;
+    hostBtn.style.opacity = isHostSession && multiplayerGetConnectedPeerCount() < 1 ? '0.6' : '';
   }
 
-  multiplayerSetStatus(MULTIPLAYER_STATE.statusBaseText || 'Not connected');
+  const joinBtn = document.getElementById('multiplayer-join-btn');
+  if (joinBtn) joinBtn.disabled = !!MULTIPLAYER_STATE.role || MULTIPLAYER_STATE.isConnecting;
+
+  const copyBtn = document.getElementById('multiplayer-copy-btn');
+  if (copyBtn) copyBtn.disabled = !MULTIPLAYER_STATE.lobbyId;
+
+  const statusEl = document.getElementById('multiplayer-status-text');
+  if (statusEl) statusEl.textContent = MULTIPLAYER_STATE.statusText || 'Not connected';
 }
 
 function multiplayerClearBoard() {
@@ -100,8 +104,35 @@ function multiplayerClearBoard() {
   updateUI();
 }
 
+function multiplayerNormalizeRoomCodeInput(input) {
+  if (!input) return;
+  input.value = multiplayerNormalizeRoomCode(input.value);
+}
+
+function multiplayerHandleRoomCodeKeydown(event) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  multiplayerJoinLobby();
+}
+
+async function multiplayerCopyRoomCode() {
+  const code = MULTIPLAYER_STATE.lobbyId;
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    if (typeof showToast === 'function') showToast('Room code copied');
+  } catch (_) {
+    const input = document.getElementById('multiplayer-room-code');
+    if (!input) return;
+    input.focus();
+    input.select();
+    document.execCommand('copy');
+    if (typeof showToast === 'function') showToast('Room code copied');
+  }
+}
+
 function openMultiplayerModal() {
-  MULTIPLAYER_STATE.localNick = multiplayerGetWireNick();
+  MULTIPLAYER_STATE.localDisplayNick = multiplayerGetNickname();
   MULTIPLAYER_STATE.preferRemote = true;
   if (MULTIPLAYER_STATE.prevGameMode == null) {
     MULTIPLAYER_STATE.prevGameMode = config.gameMode === GAME_MODES.MULTIPLAYER ? DEFAULT_GAME_MODE : config.gameMode;
@@ -115,29 +146,11 @@ function openMultiplayerModal() {
   }
   multiplayerSyncModal();
   multiplayerSyncActionButtons();
-  multiplayerRenderLobbyList();
   openModal('multiplayer-modal');
-  multiplayerStartLobbyListPolling();
-  multiplayerRefreshLobbyList();
 }
 
 function closeMultiplayerModal() {
-  multiplayerStopLobbyListPolling();
   closeModal('multiplayer-modal');
-}
-
-function multiplayerStartLobbyListPolling() {
-  multiplayerStopLobbyListPolling();
-  multiplayerRefreshLobbyList();
-  MULTIPLAYER_STATE.lobbyListTimer = setInterval(() => {
-    multiplayerRefreshLobbyList();
-  }, 500);
-}
-
-function multiplayerStopLobbyListPolling() {
-  if (!MULTIPLAYER_STATE.lobbyListTimer) return;
-  clearInterval(MULTIPLAYER_STATE.lobbyListTimer);
-  MULTIPLAYER_STATE.lobbyListTimer = null;
 }
 
 if (typeof AppEvents !== 'undefined' && AppEvents && typeof AppEvents.on === 'function') {

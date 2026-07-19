@@ -13,6 +13,7 @@
 ### Game modes
 
 - **Normal**: Full deck, standard gameplay.
+- **Multiplayer**: Two or three players share a room code. Trystero establishes the P2P connection; the host validates sets and owns the authoritative board state.
 - **Training**: Replays a curated loop of boards to drill tough situations.
   - During regular play, the app snapshots boards when you find sets.
   - At game finish, it saves your slowest boards (if you found enough sets) and reuses them in Training sessions.
@@ -110,8 +111,8 @@ All of these can be changed in **Settings → Keybinds** (desktop only).
 
 This is a static app (no build step).
 
-- **Simplest**: open `index.html` in your browser.
-- **Recommended**: run a local static server (avoids some browser restrictions).
+- **Simplest**: open `index.html` in your browser for single-player modes.
+- **Recommended**: run a local static server. Multiplayer uses a dynamic module import and WebRTC, so it requires `http(s)` rather than `file://`.
   - Example (Python): `python -m http.server`
 
 ---
@@ -120,6 +121,7 @@ This is a static app (no build step).
 
 - Vanilla JS, HTML, CSS.
 - [Tailwind CSS](https://tailwindcss.com/) (CDN), [Chart.js](https://www.chartjs.org/), [html2canvas](https://html2canvas.hertzen.com/).
+- [Trystero](https://github.com/dmotz/trystero) (Nostr strategy) for P2P room discovery, signaling, and messaging.
 
 ---
 
@@ -130,4 +132,4 @@ Key modules:
 - **Core**: `assets/js/core/state.js`, `assets/js/core/constants.js`, `assets/js/core/storage-module.js`, `assets/js/core/utilities.js`
 - **Game**: `assets/js/game/game-logic.js`, `assets/js/game/set-math.js`, `assets/js/game/graphics-rendering.js`, `assets/js/game/tps-logic.js`, `assets/js/game/training-mode.js`
 - **UI**: `assets/js/ui/settings.js`, `assets/js/ui/modal-management.js`, `assets/js/ui/results-stats.js`, `assets/js/ui/event-listeners.js`, `assets/js/ui/resizer.js`, `assets/js/ui/color-picker.js`, `assets/js/ui/keybinds.js`
-- **Online**: `assets/js/online/online-leaderboard.js`, `assets/js/online/multiplayer.js`, `assets/js/online/multiplayer/*.js`
+- **Online**: `assets/js/online/online-leaderboard.js`, `assets/js/online/multiplayer.js`, `assets/js/online/multiplayer/ui.js`, `assets/js/online/multiplayer/state-sync.js`
